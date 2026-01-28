@@ -5,9 +5,8 @@ import logging
 from argparse import ArgumentParser
 import shutil
 import time
-import subprocess
-from typing import Optional
-
+from pathlib import Path
+from utils import *
 # --------------------------
 # Argument parser
 # --------------------------
@@ -23,7 +22,7 @@ parser.add_argument("--magick_executable", default="", type=str)
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--acc", action="store_true", help="Use accelerated parameters for COLMAP")
+parser.add_argument("--default", action="store_true", help="Use default parameters for COLMAP")
 parser.add_argument("--images_folds", "-I", nargs='+', default=None,
                     help="List of image folders (relative to source_path or absolute). Optional.")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -42,95 +41,28 @@ def resource_path(relative_path: str) -> str:
     return os.path.join(base_path, relative_path)
 
 
-def run_subprocess(cmd: list, log_path: str):
-    """
-    Run a subprocess command, print stdout/stderr in real-time and save to log file.
-    Windows compatible.
-    """
-    logger.info(f"Running command: {' '.join(cmd)}")
-    
-    with open(log_path, "w", encoding="utf-8") as log_file:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,  # line-buffered
-            shell=False  # Windows, using list command
-        )
-
-        # Real-time printing and logging
-        for line in process.stdout:
-            line = line.rstrip()
-            if line:
-                print(line)
-                log_file.write(line + "\n")
-        process.wait()
-
-    if process.returncode != 0:
-        logger.error(f"Command failed with code {process.returncode}. See {log_path} for details.")
-        raise subprocess.CalledProcessError(process.returncode, cmd)
-
-
-def get_largest_subfolder(parent_dir: str) -> Optional[str]:
-    """Return the subfolder with the largest total file size."""
-    if not os.path.isdir(parent_dir):
-        raise ValueError(f"Path not found or not a directory: {parent_dir}")
-    max_size = -1
-    largest_subfolder = None
-    for name in os.listdir(parent_dir):
-        sub_path = os.path.join(parent_dir, name)
-        if not os.path.isdir(sub_path):
-            continue
-        total_size = 0
-        for root, _, files in os.walk(sub_path):
-            for file in files:
-                try:
-                    total_size += os.path.getsize(os.path.join(root, file))
-                except OSError:
-                    pass
-        if total_size > max_size:
-            max_size = total_size
-            largest_subfolder = sub_path
-    return largest_subfolder
-
-def count_image_files(folder_path: str) -> int:
-    """
-    统计指定文件夹路径下的图像文件数量（仅当前文件夹，不包含子文件夹）
-    """
-    # 定义常见的图像文件扩展名（转小写，方便统一判断）
-    image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}
-
-    image_count = 0
-
-    if not os.path.exists(folder_path):
-        print(f"错误：文件夹路径 '{folder_path}' 不存在！")
-        return 0
-    if not os.path.isdir(folder_path):
-        print(f"错误：'{folder_path}' 不是一个有效的文件夹路径！")
-        return 0
-
-    # 遍历文件夹中的所有文件
-    for file_name in os.listdir(folder_path):
-        file_path = os.path.join(folder_path, file_name)
-        if os.path.isfile(file_path):
-            file_ext = os.path.splitext(file_name)[1].lower()
-            if file_ext in image_extensions:
-                image_count += 1
-
-    return image_count
-
-
 # --------------------------
 # Paths and executables
 # --------------------------
 current_path = resource_path(".")
-colmap_path = "colmap"
+os_type = check_operating_system()
+print(f"Detected operating system: {os_type}")
+if os_type == 'Windows':
+    colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/bin/colmap.exe")
+else:
+    colmap_path = "colmap"
 colmap_command = args.colmap_executable if args.colmap_executable else colmap_path
 
 use_gpu = 0 if args.no_gpu else 1
 
-output_path = args.output_path if args.output_path else args.source_path
+if args.output_path == "":
+    output_path = args.source_path
+else:
+    output_path = args.output_path
+    if not Path(output_path).is_absolute():
+        output_path = os.path.join(args.source_path, output_path)
+
+print("Output path:", output_path)
 os.makedirs(output_path, exist_ok=True)
 
 # --------------------------
@@ -149,7 +81,7 @@ ch.setFormatter(log_formatter)
 logger.addHandler(ch)
 
 # File handler
-log_dir = args.output_path if args.output_path else args.source_path
+log_dir = output_path
 os.makedirs(log_dir, exist_ok=True)  # <--- 确保目录存在
 log_file = os.path.join(log_dir, "run-sfm.log")
 fh = logging.FileHandler(log_file, encoding="utf-8")
@@ -192,7 +124,7 @@ feat_extraction_cmd = [
 ]
 logger.info("Starting feature extraction...")
 t0 = time.time()
-run_subprocess(feat_extraction_cmd, feat_extraction_log)
+run_subprocess(feat_extraction_cmd, logger)
 feature_extraction_time = time.time() - t0
 logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 
@@ -200,7 +132,7 @@ logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 match_log_path = os.path.join(output_path, "matcher.log")
 logger.info("Starting feature matching...")
 t1 = time.time()
-if args.acc:
+if not args.default:
     feat_matching_cmd = [
         colmap_command, "exhaustive_matcher",
         "--database_path", database_path,
@@ -208,11 +140,11 @@ if args.acc:
         "--FeatureMatching.use_gpu", str(use_gpu),
         "--FeatureMatching.guided_matching", "0", # 0
         "--SiftMatching.max_ratio", "0.8", # 0.8
-        "--SiftMatching.max_distance", "0.55", # 0.7
-        "--TwoViewGeometry.min_num_inliers", "30", # 15
+        "--SiftMatching.max_distance", "0.7", # 0.7
+        "--TwoViewGeometry.min_num_inliers", "25", # 15
         "--TwoViewGeometry.max_error", "4", # 4
         "--TwoViewGeometry.confidence", "0.9999", # 0.999
-        "--TwoViewGeometry.min_inlier_ratio", "0.9", # 0.25
+        "--TwoViewGeometry.min_inlier_ratio", "0.5", # 0.25
         "--TwoViewGeometry.detect_watermark", "0", # 1
         "--TwoViewGeometry.filter_stationary_matches", "1", # 0
         "--TwoViewGeometry.compute_relative_pose", "0", # 0
@@ -225,7 +157,7 @@ else:
         "--FeatureMatching.use_gpu", str(use_gpu),
         "--log_level", str(log_level),
     ]
-run_subprocess(feat_matching_cmd, match_log_path)
+run_subprocess(feat_matching_cmd, logger)
 feature_matching_time = time.time() - t1
 logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
@@ -235,60 +167,40 @@ logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 mapper_log_path = os.path.join(output_path, "mapper.log")
 logger.info("Starting mapper...")
 t2 = time.time()
-if args.acc:
+if not args.default:
     mapper_cmd = [
-        "glomap", "mapper",
+        colmap_command, "mapper",
         "--database_path", database_path,
         "--image_path", images_path,
         "--output_path", distorted_sparse_path,
-        "--ba_iteration_num", "3",
-        "--retriangulation_iteration_num", "1",
-        "--skip_preprocessing", "0",
-        "--skip_view_graph_calibration", "0",
-        "--skip_relative_pose_estimation", "0",
-        "--skip_rotation_averaging", "0",
-        "--skip_global_positioning", "0",
-        "--skip_bundle_adjustment", "0",
-        "--skip_retriangulation", "0",
-        "--skip_pruning", "0", # 1
-        "--ViewGraphCalib.thres_lower_ratio", "0.1",
-        "--ViewGraphCalib.thres_higher_ratio", "10",
-        "--ViewGraphCalib.thres_two_view_error", "2",
-        "--RelPoseEstimation.max_epipolar_error", "1",
-        "--TrackEstablishment.min_num_tracks_per_view", "-1",
-        "--TrackEstablishment.min_num_view_per_track", "3",
-        "--TrackEstablishment.max_num_view_per_track", "100",
-        "--TrackEstablishment.max_num_tracks", "10000000",
-        "--GlobalPositioning.use_gpu", "1",
-        "--GlobalPositioning.gpu_index", "-1",
-        "--GlobalPositioning.optimize_positions", "1",
-        "--GlobalPositioning.optimize_points", "1",
-        "--GlobalPositioning.optimize_scales", "1",
-        "--GlobalPositioning.thres_loss_function", "0.2", # 0.1
-        "--GlobalPositioning.max_num_iterations", "100",
-        "--BundleAdjustment.use_gpu", "1",
-        "--BundleAdjustment.gpu_index", "-1",
-        "--BundleAdjustment.optimize_rig_poses", "0",
-        "--BundleAdjustment.optimize_rotations", "1",
-        "--BundleAdjustment.optimize_translation", "1",
-        "--BundleAdjustment.optimize_intrinsics", "1",
-        "--BundleAdjustment.optimize_principal_point", "0",
-        "--BundleAdjustment.optimize_points", "1",
-        "--BundleAdjustment.thres_loss_function", "1",
-        "--BundleAdjustment.max_num_iterations", "200",
-        "--Triangulation.complete_max_reproj_error", "15",
-        "--Triangulation.merge_max_reproj_error", "15",
-        "--Triangulation.min_angle", "3", # 1
-        "--Triangulation.min_num_matches", "30", # 15
-        "--Thresholds.max_angle_error", "1",
-        "--Thresholds.max_reprojection_error", "0.01",
-        "--Thresholds.min_triangulation_angle", "3", # 1
-        "--Thresholds.max_epipolar_error_E", "1",
-        "--Thresholds.max_epipolar_error_F", "4",
-        "--Thresholds.max_epipolar_error_H", "4",
-        "--Thresholds.min_inlier_num", "30", # 30
-        "--Thresholds.min_inlier_ratio", "0.9", # 0.25
-        "--Thresholds.max_rotation_error", "10"
+        "--Mapper.num_threads", "-1",
+        "--Mapper.min_num_matches", "25", # 15
+        "--Mapper.init_num_trials", "200", # 200
+        "--Mapper.init_min_num_inliers", "100", # 100
+        "--Mapper.init_max_error", "4", # 4
+        "--Mapper.init_min_tri_angle", "16", # 16
+        "--Mapper.ba_local_min_tri_angle", "6", # 6
+        "--Mapper.ba_local_num_images", "6", # 6
+        "--Mapper.ba_local_max_num_iterations", "12", # 25
+        "--Mapper.ba_local_max_refinements", "2", # 2
+        "--Mapper.ba_local_max_refinement_change", "0.001", # 0.001
+        "--Mapper.ba_global_frames_ratio", "2.0", # 1.1
+        "--Mapper.ba_global_points_ratio", "2.0", # 1.1
+        "--Mapper.ba_global_frames_freq", "5000", # 5000
+        "--Mapper.ba_global_points_freq", "250000", # 250000
+        "--Mapper.ba_global_max_num_iterations", "20", # 50
+        "--Mapper.ba_global_max_refinements", "2", # 5
+        "--Mapper.ba_global_max_refinement_change", "0.001", # 0.0005
+        "--Mapper.ba_refine_focal_length", "1", # 1
+        "--Mapper.ba_refine_principal_point", "0", # 0
+        "--Mapper.ba_refine_extra_params", "1", # 1
+        "--Mapper.max_extra_param", "0.3", # 1
+        "--Mapper.tri_min_angle", "2.0", # 1.5
+        "--Mapper.tri_create_max_angle_error", "2", # 2
+        "--Mapper.tri_merge_max_reproj_error", "4", # 4
+        "--Mapper.filter_max_reproj_error", "4", # 4
+        "--Mapper.max_reg_trials", "3", # 3
+        "--log_level", str(log_level),
     ]
 else:
     mapper_cmd = [
@@ -299,7 +211,7 @@ else:
         "--Mapper.ba_global_function_tolerance", "0.000001",
         "--log_level", str(log_level),
     ]
-run_subprocess(mapper_cmd, mapper_log_path)
+run_subprocess(mapper_cmd, logger)
 mapper_time = time.time() - t2
 logger.info(f"Mapper done in {mapper_time:.2f} s")
 
@@ -315,7 +227,7 @@ img_undist_cmd = [
     "--output_path", output_path,
     "--output_type", "COLMAP"
 ]
-run_subprocess(img_undist_cmd, undistorted_log_path)
+run_subprocess(img_undist_cmd, logger)
 logger.info("Image undistortion done.")
 
 # --------------------------
@@ -339,7 +251,7 @@ for item in os.listdir(sparse_output_path):
     elif os.path.isfile(src_path):
         shutil.move(src_path, dst_path)
 
-img_num = count_image_files(os.path.join(output_path, "images"))
+img_num = count_images_in_dir(os.path.join(output_path, "images"))
 
 logger.info("Sparse output successfully organized into sparse/0.")
 

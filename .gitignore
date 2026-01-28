@@ -1,0 +1,5 @@
+colmap-x64-windows*/
+__pycache__/
+dist
+build
+*.spec
