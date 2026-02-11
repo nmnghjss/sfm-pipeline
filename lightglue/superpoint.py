@@ -48,6 +48,7 @@ from torch import nn
 
 from .utils import Extractor
 
+# import time
 
 def simple_nms(scores, nms_radius: int):
     """Fast Non-maximum suppression to remove nearby points"""
@@ -149,6 +150,8 @@ class SuperPoint(Extractor):
 
     def forward(self, data: dict) -> dict:
         """Compute keypoints, scores, descriptors for image"""
+
+        # start_time = time.time()
         for key in self.required_data_keys:
             assert key in data, f"Missing key {key} in data"
         image = data["image"]
@@ -194,6 +197,8 @@ class SuperPoint(Extractor):
             torch.stack(best_kp[1:3], dim=-1)[best_kp[0] == i] for i in range(b)
         ]
         scores = [scores[best_kp[0] == i] for i in range(b)]
+        # end_time = time.time()
+        # print(f"SuperPoint forward time: {end_time - start_time:.2f} seconds")
 
         # Keep the k keypoints with highest score
         if self.conf.max_num_keypoints is not None:
