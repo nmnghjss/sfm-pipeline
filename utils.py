@@ -96,37 +96,6 @@ def run_subprocess(cmd: list, logger: Optional[logging.Logger] = None) -> int:
         return 0
 
 
-
-# def run_subprocess(cmd: list, log_path: str):
-#     """
-#     Run a subprocess command, print stdout/stderr in real-time and save to log file.
-#     Windows compatible.
-#     """
-#     # logger.info(f"Running command: {' '.join(cmd)}")
-    
-#     with open(log_path, "w", encoding="utf-8") as log_file:
-#         process = subprocess.Popen(
-#             cmd,
-#             stdout=subprocess.PIPE,
-#             stderr=subprocess.STDOUT,
-#             text=True,
-#             bufsize=1,  # line-buffered
-#             shell=False  # Windows, using list command
-#         )
-
-#         # Real-time printing and logging
-#         for line in process.stdout:
-#             line = line.rstrip()
-#             if line:
-#                 print(line)
-#                 log_file.write(line + "\n")
-#         process.wait()
-
-#     if process.returncode != 0:
-#         log_file.write(f"Command failed with code {process.returncode}. See {log_path} for details.")
-#         raise subprocess.CalledProcessError(process.returncode, cmd)
-
-
 def configure_logger(output_path: str, level: int, logger_name: Optional[str] = None) -> logging.Logger:
     """Create or reconfigure a named logger for each run to avoid duplicate handlers.
 
@@ -238,7 +207,7 @@ def count_images_in_dir(folder_path: str) -> int:
 
 def count_images_in_dir_recursive(root_dir, image_extensions=None):
     if image_extensions is None:
-        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp'}
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.tif','.webp'}
 
     from pathlib import Path
     root = Path(root_dir)
@@ -286,3 +255,163 @@ def clear_folder(folder_path):
                 print(f"已删除文件夹及其内容: {item_path}")
         except Exception as e:
             print(f"删除 {item_path} 时出错: {e}")
+
+
+def delete_directory(path):
+    """递归删除目录及其所有内容"""
+    try:
+        if os.path.exists(path):
+            shutil.rmtree(path)
+            return True
+        else:
+            return False
+    except Exception as e:
+        return False
+
+
+def delete_file(path):
+    """删除单个文件"""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            return True
+        else:
+            return False
+    except Exception as e:
+        return False
+
+def copy_file(src, dst):
+    try:
+        shutil.copy2(src, dst)  # copy2会保留元数据（修改时间等）
+        return True
+    except Exception as e:
+        return False
+    
+
+from typing import List
+
+def get_first_level_subdirs(parent_dir: str) -> List[str]:
+    """
+    获取指定目录下的第一级子目录（不递归）
+
+    返回的是完整路径列表
+    """
+    subdirs = []
+
+    with os.scandir(parent_dir) as it:
+        for entry in it:
+            if entry.is_dir():
+                subdirs.append(entry.path)
+
+    return subdirs
+
+def count_image_files(folder_path: str) -> int:
+    """
+    统计指定文件夹路径下的图像文件数量（仅当前文件夹，不包含子文件夹）
+    """
+    # 定义常见的图像文件扩展名（转小写，方便统一判断）
+    image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}
+
+    image_count = 0
+
+    if not os.path.exists(folder_path):
+        print(f"错误：文件夹路径 '{folder_path}' 不存在！")
+        return 0
+    if not os.path.isdir(folder_path):
+        print(f"错误：'{folder_path}' 不是一个有效的文件夹路径！")
+        return 0
+
+    # 遍历文件夹中的所有文件
+    for file_name in os.listdir(folder_path):
+        file_path = os.path.join(folder_path, file_name)
+        if os.path.isfile(file_path):
+            file_ext = os.path.splitext(file_name)[1].lower()
+            if file_ext in image_extensions:
+                image_count += 1
+
+    return image_count
+
+
+def find_directories_by_name(root_folder, target_name):
+    """
+    递归搜索指定目录下所有名为 target_name 的子目录。
+    
+    Args:
+        root_folder (str): 起始搜索的根目录路径
+        target_name (str): 要寻找的目录名称（例如 "images" 或 "output"）
+        
+    Returns:
+        list: 包含所有匹配目录绝对路径的列表
+    """
+    matched_directories = []
+
+    # os.walk 会生成三元组 (当前路径, 当前路径下的子目录列表, 当前路径下的文件列表)
+    for root, dirs, files in os.walk(root_folder):
+        # 我们在 dirs 列表中寻找匹配的名称
+        if target_name in dirs:
+            # 拼接出完整的绝对路径
+            full_path = os.path.abspath(os.path.join(root, target_name))
+            matched_directories.append(full_path)
+            
+            # 优化提示：
+            # 如果你确定 target_name 目录下面不会再有同名的子目录，
+            # 可以通过修改 dirs 来阻止 os.walk 继续深入这个分支，提高效率：
+            # dirs.remove(target_name) 
+
+    return matched_directories
+
+
+
+def move_folder(source_dir: str, target_parent_dir: str) -> bool:
+    """
+    将源文件夹移动到指定的目标父文件夹中
+    
+    Args:
+        source_dir: 源文件夹的路径（绝对/相对路径均可）
+        target_parent_dir: 目标父文件夹的路径（源文件夹会被移动到这个文件夹下）
+    
+    Returns:
+        bool: 移动成功返回True，失败返回False
+    
+    Raises:
+        无（内部捕获所有常见异常并打印提示，返回False）
+    """
+    # 1. 规范化路径（处理末尾斜杠、相对路径等问题）
+    source_dir = os.path.abspath(source_dir)
+    target_parent_dir = os.path.abspath(target_parent_dir)
+    
+    # 2. 获取源文件夹的名称（用于拼接最终目标路径）
+    source_folder_name = os.path.basename(source_dir)
+    # 最终目标路径：目标父文件夹 + 源文件夹名
+    final_target_dir = os.path.join(target_parent_dir, source_folder_name)
+    
+    try:
+        # 3. 校验源目录是否存在且是文件夹
+        if not os.path.exists(source_dir):
+            print(f"错误：源文件夹 '{source_dir}' 不存在！")
+            return False
+        if not os.path.isdir(source_dir):
+            print(f"错误：'{source_dir}' 不是一个文件夹！")
+            return False
+        
+        # 4. 校验目标父目录是否存在，不存在则创建
+        if not os.path.exists(target_parent_dir):
+            print(f"目标父文件夹 '{target_parent_dir}' 不存在，正在创建...")
+            os.makedirs(target_parent_dir, exist_ok=True)  # exist_ok=True 避免重复创建报错
+        
+        # 5. 检查目标路径是否已存在（避免覆盖）
+        if os.path.exists(final_target_dir):
+            print(f"错误：目标路径 '{final_target_dir}' 已存在，无法移动（避免覆盖）！")
+            return False
+        
+        # 6. 执行文件夹移动（核心操作）
+        shutil.move(source_dir, target_parent_dir)
+        print(f"成功！文件夹已从 '{source_dir}' 移动到 '{final_target_dir}'")
+        return True
+    
+    except PermissionError:
+        print(f"错误：权限不足，无法移动文件夹 '{source_dir}'！")
+        return False
+    except Exception as e:
+        print(f"移动失败：未知错误 - {str(e)}")
+        return False

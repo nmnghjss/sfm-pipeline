@@ -7,13 +7,21 @@ import matplotlib.pyplot as plt
 import time
 
 # SuperPoint+LightGlue
-max_num_keypoints = 8192
-extractor = SuperPoint(max_num_keypoints=max_num_keypoints).eval().cuda()  # load the extractor
-matcher = LightGlue(features='superpoint').eval().cuda()  # load the matcher
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+max_num_keypoints = 2048
+feature_weights_path = "checkpoints/superpoint_v1.pth"
+matcher_weight_path = "checkpoints/superpoint_lightglue_v0-1_arxiv.pth"
+extractor = SuperPoint(weights_path=feature_weights_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+matcher = LightGlue(path_or_url=matcher_weight_path).eval().to(device)
 
 # or DISK+LightGlue, ALIKED+LightGlue or SIFT+LightGlue
-# extractor = DISK(max_num_keypoints=2048).eval().cuda()  # load the extractor
-# matcher = LightGlue(features='disk').eval().cuda()  # load the matcher
+# extractor = DISK(max_num_keypoints=2048).eval().to(device)  # load the extractor
+# matcher = LightGlue(features='disk').eval().to(device)  # load the matcher
+
+
+# extractor = SIFT(max_num_keypoints=2048).eval().cuda()  # load the extractor
+# matcher = LightGlue(features='sift').eval().cuda()  # load the matcher
 
 # load each image as a torch.Tensor on GPU with shape (3,H,W), normalized in [0,1]
 image0_path = "E:\\Test1234\\data19\\input\\0001.jpg"
