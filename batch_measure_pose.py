@@ -129,7 +129,13 @@ if __name__ == '__main__':
         base_cameras, base_images, base_points3D = read_model(base_sfm_dir, ext=".bin")
         update_cameras, update_images, update_points3D = read_model(update_sfm_dir, ext=".bin")
 
-        errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)
+        if base_images is None or update_images is None:
+            print("error: base image or update image is None, skipping this dataset.")
+            errors = PoseError()
+            errors.ate_error_mean = 10000
+            errors.rotate_angle_error_mean = 10000
+        else:
+            errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)
 
         if errors is not None:
             pose_erroe_list[data_path] = errors

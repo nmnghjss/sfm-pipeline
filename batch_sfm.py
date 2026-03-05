@@ -419,8 +419,8 @@ if __name__ == '__main__':
     parser.add_argument("--train_3dgs", action='store_true', default=False, help='仅执行3D高斯训练阶段')
 
     parser.add_argument("--dataset_root", "-ds", type=str, default="dataset", help='数据集根目录')
-    parser.add_argument("--output_name", "-o", type=str, default="output-colmap-sp_2048_lg_30_0.75-match_inlier_30_0.8_acc", help='3DGS模型输出目录')
-    parser.add_argument("--metrics_file_name", "-mf", type=str, default="metric_sfm_splg_acc.csv", help='保存所有数据集时间和指标的csv文件名')
+    parser.add_argument("--output_name", "-o", type=str, default="output-colmap-sift4096-match_guided-acc", help='3DGS模型输出目录')
+    parser.add_argument("--metrics_file_name", "-mf", type=str, default="metric_sfm_sift4096-match_guided_acc.csv", help='保存所有数据集时间和指标的csv文件名')
 
     args = parser.parse_args()
     # args.save_iterations.append(args.iterations)
@@ -462,8 +462,9 @@ if __name__ == '__main__':
         sfm_start = time.time()
         if "sfm" in args.pipeline:
             # sfm_pipeline_exe = os.path.join(current_path, "run-sfm-20251231-v3/run-sfm.exe") 
-            sfm_pipeline_exe = "python sfm-v6.py --alg acc --max_feature_num 2048 -splg -st 0.75 "
-            # sfm_pipeline_exe = "python sfm-v6.py --alg hierarchical --max_feature_num 8192 "
+            # sfm_pipeline_exe = "python sfm-v6.py --alg acc --max_feature_num 8192  -sms acc "
+            sfm_pipeline_exe = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms sequential "
+            # sfm_pipeline_exe = "python sfm-v6.py --alg acc --max_feature_num 2048 -splg "
             sfm_output_dir = project_dir
             sfm_with_colmap(sfm_pipeline_exe, data_path, sfm_output_dir)   
 

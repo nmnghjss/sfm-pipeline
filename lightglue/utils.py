@@ -7,7 +7,8 @@ import cv2
 import kornia
 import numpy as np
 import torch
-
+from torchvision.io import read_image as torchvision_read_image
+from torchvision.transforms import functional as F
 
 class ImagePreprocessor:
     default_conf = {
@@ -90,7 +91,15 @@ def numpy_image_to_torch(image: np.ndarray) -> torch.Tensor:
         image = image[None]  # add channel axis
     else:
         raise ValueError(f"Not an image: {image.shape}")
-    return torch.tensor(image / 255.0, dtype=torch.float)
+    
+    # t3 = time.time()
+    # return torch.tensor(image / 255.0, dtype=torch.float)
+    # 使用更高效的方法：先转为float32，然后直接共享内存（零拷贝）
+    image_float32 = image.astype(np.float32, copy=False)  # copy=False避免不必要的复制
+    # result = torch.from_numpy(image_float32).div_(255.0)  # div_是就地操作，更高效
+    result = torch.from_numpy(image_float32)
+    # print("convert time: ", time.time() - t3)
+    return result
 
 
 def resize_image(
@@ -120,12 +129,25 @@ def resize_image(
     }[interp]
     return cv2.resize(image, (w_new, h_new), interpolation=mode), scale
 
-
+# import time
 def load_image(path: Path, resize: int = None, **kwargs) -> torch.Tensor:
+    # t1 = time.time()
     image = read_image(path)
+    # print("load time: ", time.time() - t1)
     if resize is not None:
         image, _ = resize_image(image, resize, **kwargs)
     return numpy_image_to_torch(image)
+
+
+def load_image_use_torchvision(path: Path, resize: int = None, **kwargs) -> torch.Tensor:    
+    # 直接读取为张量 (CHW格式，uint8类型)
+    image = torchvision_read_image(str(path))
+    # 转换为浮点型并归一化
+    # image = image.float() / 255.0  # 归一化到 [0, 1]
+    image = image.float()    
+    if resize is not None:
+        image = F.resize(image, resize, **kwargs)    
+    return image  # 仍在CPU上，使用时再移动到GPU
 
 
 class Extractor(torch.nn.Module):

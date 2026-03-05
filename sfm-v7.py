@@ -7,12 +7,8 @@ import shutil
 import time
 from utils import *
 from pathlib import Path
-import torch
 import numpy as np
 import cv2
-import sqlite3
-from lightglue import LightGlue, SuperPoint
-from lightglue.utils import load_image, rbd, load_image_use_torchvision
 from database import COLMAPDatabase, ReadColmapDatabase
 from visualization import visualize_image_pairs
 
@@ -43,7 +39,7 @@ parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
-parser.add_argument("--sift_match_strategy", "-sms", type=str, default="acc", choices=["default","acc", "sequential", "vocab_tree"], help="Matching strategy for SIFT features")
+parser.add_argument("--sift_match_strategy", "-sms", type=str, default="sequential", choices=["default","acc", "sequential", "vocab_tree"], help="Matching strategy for SIFT features")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
@@ -362,360 +358,6 @@ def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.nd
         logger.warning(f"Failed to write matches to database for image pair ({image_id0}, {image_id1}): {e}")
 
 
-def find_similar_images_parallel(image_features, k=10, threshold=None, logger=None):
-    """
-    计算图像相似度（并行优化），找到最相似的K张图或根据阈值找相似图。
-    使用批量cosine_similarity计算，效率高。
-    
-    Args:
-        image_features: Dict of image features
-        k: 每张图找到的最相似图像数 (仅当threshold为None时使用)
-        threshold: 相似度阈值(0~1)。如果指定，将找出所有相似度 > threshold 的图像对
-        logger: Optional logger instance
-    
-    Returns:
-        List of (i, img_name0, j, img_name1) tuples representing match pairs
-    """
-    image_list = list(image_features.keys())
-    n_images = len(image_list)
-    
-    if n_images < 2:
-        return []
-    
-    # 预计算所有图像的平均描述符
-    desc_means = {}
-    valid_images = []
-    
-    for img_name in image_list:
-        if image_features[img_name] is not None:
-            desc = image_features[img_name]['descriptors'].mean(dim=1)  # (256,)
-            # print(f"Image {img_name} desc shape: {desc.shape}")
-            desc_means[img_name] = desc
-            valid_images.append(img_name)
-    
-    if len(valid_images) < 2:
-        return []
-    
-    # 创建描述符矩阵
-    print(f"Creating descriptor tensor from {len(valid_images)} images")
-    descriptors_list = [desc_means[name].unsqueeze(0) if desc_means[name].dim() == 1 else desc_means[name] 
-                       for name in valid_images]
-    
-    descriptors_tensor = torch.cat(descriptors_list, dim=0)  # (m, 256)
-    print(f"descriptors_tensor shape after cat: {descriptors_tensor.shape}")
-    
-    # 计算相似度矩阵（使用归一化向量的矩阵乘法）
-    # 确保 descriptors_tensor 是 (m, 256)
-    if descriptors_tensor.dim() != 2:
-        descriptors_tensor = descriptors_tensor.reshape(-1, descriptors_tensor.shape[-1])
-    
-    print(f"descriptors_tensor shape before norm: {descriptors_tensor.shape}")
-    norm_descs = torch.nn.functional.normalize(descriptors_tensor, p=2, dim=1)  # (m, 256)
-    print(f"norm_descs shape: {norm_descs.shape}")
-    similarity_matrix = norm_descs @ norm_descs.t()  # (m, m) - cosine similarity
-    print(f"similarity_matrix shape: {similarity_matrix.shape}")
-    
-    # 为每张图找到最相似的K张或基于阈值找相似图
-    match_pairs = []
-    
-    if threshold is not None:
-        # 基于阈值的匹配
-        print(f"Using similarity threshold: {threshold}")
-        for i in range(len(valid_images)):
-            similarities = similarity_matrix[i]  # (m,) - 第i张图与所有图的相似度
-            
-            # 找出所有相似度大于阈值的索引（排除自己，自己的相似度为1）
-            similar_mask = similarities > threshold
-            similar_indices = torch.where(similar_mask)[0]
-            print(f"Image {i} has {len(similar_indices)} similar images above threshold {threshold}")
-            
-            # 如果大于阈值的匹配太多，只取前30个最相似的
-            max_similar_num = 30
-            if len(similar_indices) > max_similar_num:
-                # 获取这些索引对应的相似度值
-                similar_sims = similarities[similar_indices]
-                # 排序并取前30个最相似的
-                top_vals, top_local_idx = torch.topk(similar_sims, min(max_similar_num, len(similar_sims)))
-                similar_indices = similar_indices[top_local_idx]
-                print(f"  Keeping top-{max_similar_num} similar images (limited from {len(similar_sims)})")
-
-            for j_local in similar_indices:
-                j_local = int(j_local.item())
-                if i == j_local:  # 跳过自己
-                    continue
-                
-                img_name0 = valid_images[i]
-                img_name1 = valid_images[j_local]
-                
-                # 找到原始image_list中的索引
-                i_orig = image_list.index(img_name0)
-                j_orig = image_list.index(img_name1)
-                
-                if i_orig < j_orig:  # 避免重复
-                    match_pairs.append((i_orig, img_name0, j_orig, img_name1))
-    else:
-        # Top-K 匹配
-        for i in range(len(valid_images)):
-            similarities = similarity_matrix[i]  # (m,) - 第i张图与所有图的相似度
-            # print(f"Image {i} similarities shape: {similarities.shape}")
-            
-            # 使用 torch.topk 获取top-K相似的索引（排除自己）
-            topk_vals, topk_indices = torch.topk(similarities, min(k+1, len(valid_images)))
-            # print(f"topk_indices shape: {topk_indices.shape}")
-            print(f"topk_vals: {topk_vals}")
-            
-            # 跳过第一个（自己），取后面的k个
-            for idx_in_topk in range(1, min(k+1, len(topk_indices))):
-                j_local = int(topk_indices[idx_in_topk].item())  # 转换为Python整数
-                
-                img_name0 = valid_images[i]
-                img_name1 = valid_images[j_local]
-                
-                # 找到原始image_list中的索引
-                i_orig = image_list.index(img_name0)
-                j_orig = image_list.index(img_name1)
-                
-                if i_orig < j_orig:  # 避免重复
-                    match_pairs.append((i_orig, img_name0, j_orig, img_name1))
-    
-    if logger:
-        if threshold is not None:
-            logger.info(f"Found {len(match_pairs)} image pairs using similarity threshold ({threshold})")
-        else:
-            logger.info(f"Found {len(match_pairs)} image pairs using parallel similarity search (top-{k})")
-    
-    return match_pairs
-
-
-def find_similar_images_quick(image_features, k=10, logger=None):
-    """
-    快速启发式方法：基于特征点分布做粗筛 + 描述符做精筛。
-    适合大规模数据集，速度快。
-    
-    Args:
-        image_features: Dict of image features
-        k: 每张图找到的最相似图像数
-        logger: Optional logger instance
-    
-    Returns:
-        List of (i, img_name0, j, img_name1) tuples representing match pairs
-    """
-    image_list = list(image_features.keys())
-    
-    # Step 1: 基于特征点统计的粗筛
-    feature_stats = {}
-    for img_name in image_list:
-        if image_features[img_name] is not None:
-            kpts = image_features[img_name]['keypoints']
-            if len(kpts) > 0:
-                feature_stats[img_name] = {
-                    'num_kpts': len(kpts),
-                    'center': kpts.mean(dim=0) if torch.is_tensor(kpts) else kpts.mean(axis=0),
-                    'spread': kpts.std(dim=0) if torch.is_tensor(kpts) else kpts.std(axis=0)
-                }
-    
-    # Step 2: 找候选（数量是k的2-3倍）
-    match_pairs = []
-    candidate_k = min(k * 2, len(image_list) - 1)
-    
-    for i, img_name0 in enumerate(image_list):
-        stats0 = feature_stats.get(img_name0)
-        if stats0 is None:
-            continue
-        
-        # 基于特征点数量的粗相似度
-        candidates = []
-        for j, img_name1 in enumerate(image_list):
-            if i >= j:
-                continue
-            
-            stats1 = feature_stats.get(img_name1)
-            if stats1 is None:
-                continue
-            
-            # 特征点数量的相似度（0-1）
-            kpt_similarity = 1 - abs(stats0['num_kpts'] - stats1['num_kpts']) / (
-                max(stats0['num_kpts'], stats1['num_kpts']) + 1e-8
-            )
-            
-            candidates.append((j, img_name1, kpt_similarity))
-        
-        # 按初步相似度排序，选择top候选
-        candidates.sort(key=lambda x: x[2], reverse=True)
-        
-        # 对候选进行精细相似度计算
-        feats0 = image_features[img_name0]
-        if feats0 is not None:
-            desc0 = feats0['descriptors'].mean(dim=1)
-            
-            refined_candidates = []
-            for j, img_name1, _ in candidates[:candidate_k]:
-                feats1 = image_features[img_name1]
-                if feats1 is not None:
-                    desc1 = feats1['descriptors'].mean(dim=1)
-                    
-                    similarity = torch.nn.functional.cosine_similarity(desc0, desc1, dim=-1).item()
-                    refined_candidates.append((j, img_name1, similarity))
-            
-            # 选择最相似的K个
-            refined_candidates.sort(key=lambda x: x[2], reverse=True)
-            for j, img_name1, _ in refined_candidates[:k]:
-                match_pairs.append((i, img_name0, j, img_name1))
-    
-    if logger:
-        logger.info(f"Found {len(match_pairs)} image pairs using quick heuristic filtering")
-    
-    return match_pairs
-
-
-def extract_features_with_superpoint(
-    weights_root: str,
-    database_path: str,
-    images_path: str,
-    max_num_keypoints: int = 2048,
-    logger: logging.Logger = None
-) -> tuple:
-    """
-    Extract features using SuperPoint and write to COLMAP database.
-    
-    Args:
-        database_path: Path to COLMAP database
-        images_path: Path to images directory
-        max_num_keypoints: Maximum number of keypoints per image
-        logger: Optional logger instance
-    
-    Returns:
-        (image_features, image_id_map, feature_extraction_time)
-        - image_features: Dict of image name -> feature tensor
-        - image_id_map: Dict of image name -> image_id in database
-    """
-    if logger is None:
-        logger = logging.getLogger()
-    
-    # Initialize SuperPoint model
-    logger.info("Initializing SuperPoint model...")
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    logger.info(f"Using device: {device}")
-    weights_path = "checkpoints/superpoint_v1.pth"
-    weights_path = os.path.join(weights_root, weights_path)
-    extractor = SuperPoint(weights_path=weights_path, max_num_keypoints=max_num_keypoints).eval().to(device)
-    
-    # Get list of images
-    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-    image_files = sorted([
-        f for f in os.listdir(images_path)
-        if os.path.splitext(f)[1].lower() in image_extensions
-    ])
-    
-    if not image_files:
-        logger.error(f"No images found in {images_path}")
-        return {}, {}, 0
-    
-    logger.info(f"Found {len(image_files)} images")
-    
-    # Connect to COLMAP database
-    try:
-        db = COLMAPDatabase.connect(database_path)
-        cursor = db.cursor()
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        return {}, {}, 0
-    
-    # Extract features for all images
-    logger.info("Extracting features with SuperPoint...")
-    feature_start = time.time()
-    
-    image_features = {}
-    image_id_map = {}
-    total_keypoints = 0
-    
-    # Buffer for batch write operations
-    keypoints_to_write = []
-    extraction_log = []
-    
-    for idx, img_file in enumerate(image_files):
-        img_path = os.path.join(images_path, img_file)        
-        try:
-            # Load image
-            # t1 = time.time()
-            # img_tensor = load_image(img_path).to(device) / 255.0
-            img_tensor = load_image_use_torchvision(img_path).to(device) / 255.0
-            # print("img shape: ", img_tensor.shape)
-            # logger.info(f"load img time: {time.time() - t1}")
-            # Extract features
-            # t2 = time.time()
-            with torch.no_grad():
-                feats = extractor.extract(img_tensor)
-            # logger.info(f"feature extract time: {time.time() - t2}")
-            # Get image ID from database
-            cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_file,))
-            result = cursor.fetchone()
-            
-            if result is None:
-                logger.warning(f"Image {img_file} not found in database, skipping feature write")
-                image_features[img_file] = feats
-                image_id_map[img_file] = None
-                continue
-            
-            image_id = result[0]
-            image_features[img_file] = feats
-            image_id_map[img_file] = image_id
-            
-            # Extract keypoints and descriptors (remove batch dimension)
-            keypoints_batch = feats['keypoints']
-            descriptors_batch = feats['descriptors']
-            
-            # Remove batch dimension if present
-            if keypoints_batch.dim() == 3 and keypoints_batch.shape[0] == 1:
-                keypoints = keypoints_batch[0]
-                descriptors = descriptors_batch[0]
-            else:
-                keypoints = keypoints_batch
-                descriptors = descriptors_batch
-            
-            # Convert to numpy
-            keypoints = keypoints.cpu().numpy()
-            descriptors = descriptors.cpu().numpy()
-            
-            # Descriptors from SuperPoint are Float32 in range [0, 1], convert to uint8
-            descriptors = (descriptors * 255.0).astype(np.uint8)
-            
-            num_kpts = keypoints.shape[0]
-            total_keypoints += num_kpts
-            
-            # Buffer keypoints for batch write
-            keypoints_to_write.append((image_id, keypoints, descriptors))
-            extraction_log.append((idx, img_file, num_kpts, image_id))
-
-            logger.info(f"Extracting feature for image {idx+1}/{len(image_files)}: {img_file}, keypoints={num_kpts}, image_id={image_id}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to extract features from {img_file}: {e}")
-            image_features[img_file] = None
-            continue
-    
-    # Batch write all keypoints and descriptors to database
-    logger.info(f"Writing {len(keypoints_to_write)} images' keypoints to database...")
-    for image_id, keypoints, descriptors in keypoints_to_write:
-        write_keypoints_to_database(db, image_id, keypoints, descriptors, logger)
-    
-    # Log extraction results
-    # for idx, img_file, num_kpts, image_id in extraction_log:
-    #     logger.info(f"  [{idx+1}/{len(image_files)}] {img_file}: {num_kpts} keypoints (image_id={image_id})")
-    
-    feature_extraction_time = time.time() - feature_start
-    successful_extractions = sum(1 for f in image_features.values() if f is not None)
-    logger.info(f"Feature extraction completed in {feature_extraction_time:.2f}s")
-    logger.info(f"  Extracted features from {successful_extractions}/{len(image_files)} images")
-    logger.info(f"  Total keypoints extracted: {total_keypoints}")
-    if successful_extractions > 0:
-        logger.info(f"  Average keypoints per image: {total_keypoints/successful_extractions:.1f}")
-    
-    db.close()
-    
-    return image_features, image_id_map, feature_extraction_time
-
-
 def generate_sequential_match_list(
     image_names: list,
     overlap: int = 30,
@@ -803,172 +445,6 @@ def generate_sequential_match_list(
     return match_pairs
 
 
-def match_features_with_lightglue(
-    weights_root: str,
-    database_path: str,
-    image_features: dict,
-    image_id_map: dict,
-    match_list_path: str = None,
-    match_strategy: str = "nearest_k",
-    max_matches_per_image: int = 15,
-    similarity_threshold: float = None,
-    logger: logging.Logger = None
-) -> tuple:
-    """
-    Match features using LightGlue and write to COLMAP database.
-    
-    Args:
-        database_path: Path to COLMAP database
-        image_features: Dict of image name -> feature tensor
-        image_id_map: Dict of image name -> image_id in database
-        match_list_path: Optional path to save match list
-        match_strategy: 'exhaustive', 'nearest_k', 'threshold', or 'quick'
-        max_matches_per_image: Max similar images per image (for nearest_k/quick)
-        similarity_threshold: Similarity threshold for threshold-based matching
-        logger: Optional logger instance
-    
-    Returns:
-        feature_matching_time
-    """
-    if logger is None:
-        logger = logging.getLogger()
-    
-    # Initialize LightGlue matcher
-    logger.info("Initializing LightGlue matcher...")
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    weight_path = "checkpoints/superpoint_lightglue_v0-1_arxiv.pth"
-    weight_path = os.path.join(weights_root, weight_path)
-    matcher = LightGlue(path_or_url=weight_path).eval().to(device)
-    
-    # Connect to database
-    try:
-        db = COLMAPDatabase.connect(database_path)
-    except Exception as e:
-        logger.error(f"Failed to connect to database: {e}")
-        return 0
-    
-    # Feature matching
-    logger.info("Matching features with LightGlue...")
-    matching_start = time.time()
-    
-    image_list = [img for img in image_features.keys() if image_features[img] is not None]
-    total_match_pairs = 0
-    total_matches = 0
-    match_statistics = []
-    # img_num = len(image_list)
-    # max_matches_per_image = int(min(max_matches_per_image, img_num * 0.3))
-    
-    # 根据策略选择匹配对
-    if match_strategy == "exhaustive":
-        match_pairs = []
-        for i, img_name0 in enumerate(image_list):
-            for j, img_name1 in enumerate(image_list):
-                if i < j:
-                    match_pairs.append((i, img_name0, j, img_name1))
-        logger.info(f"Exhaustive matching: {len(match_pairs)} image pairs will be matched")
-    
-    elif match_strategy == "nearest_k":
-        logger.info(f"Finding top-{max_matches_per_image} similar images for each (parallel)...")
-        similarity_start = time.time()
-        match_pairs = find_similar_images_parallel(image_features, k=max_matches_per_image, threshold=None, logger=logger)
-        logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
-    
-    elif match_strategy == "threshold":
-        logger.info(f"Using similarity threshold matching (threshold={similarity_threshold})...")
-        similarity_start = time.time()
-        match_pairs = find_similar_images_parallel(image_features, k=None, threshold=similarity_threshold, logger=logger)
-        logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
-    
-    elif match_strategy == "quick":
-        logger.info(f"Using quick heuristic filtering (top-{max_matches_per_image})...")
-        similarity_start = time.time()
-        match_pairs = find_similar_images_quick(image_features, k=max_matches_per_image, logger=logger)
-        logger.info(f"Quick filtering took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
-    
-    else:
-        logger.warning(f"Unknown match_strategy '{match_strategy}', falling back to exhaustive")
-        match_pairs = []
-        for i, img_name0 in enumerate(image_list):
-            for j, img_name1 in enumerate(image_list):
-                if i < j:
-                    match_pairs.append((i, img_name0, j, img_name1))
-    
-    # Buffer for batch write operations
-    matches_to_write = []
-    match_list_pairs = []
-    
-    # Perform matching
-    logger.info(f"Performing LightGlue matching on {len(match_pairs)} pairs...")
-    match_progress_interval = max(1, len(match_pairs) // 100)
-    
-    for pair_idx, (i, img_name0, j, img_name1) in enumerate(match_pairs):
-        if pair_idx % match_progress_interval == 0 and pair_idx > 0:
-            progress_pct = ((pair_idx+1) / len(match_pairs)) * 100
-            logger.info(f"  Progress: {progress_pct:.1f}% ({pair_idx}/{len(match_pairs)})")
-        
-        try:
-            feats0 = image_features[img_name0]
-            feats1 = image_features[img_name1]
-            
-            if feats0 is None or feats1 is None:
-                continue
-            
-            image_id0 = image_id_map[img_name0]
-            image_id1 = image_id_map[img_name1]
-            
-            if image_id0 is None or image_id1 is None:
-                continue
-            
-            # Perform matching
-            with torch.no_grad():
-                matches01 = matcher({'image0': feats0, 'image1': feats1})
-            
-            # Remove batch dimension
-            feats0_rbd, feats1_rbd, matches01_rbd = [rbd(x) for x in [feats0, feats1, matches01]]
-            matches = matches01_rbd['matches'].cpu().numpy()
-            
-            if len(matches) > 15:
-                total_match_pairs += 1
-                total_matches += len(matches)
-                match_statistics.append((img_name0, img_name1, len(matches)))
-                
-                # Buffer matches for batch write
-                matches_to_write.append((image_id0, image_id1, matches))
-                match_list_pairs.append((img_name0, img_name1))
-            
-        except Exception as e:
-            logger.warning(f"Failed to match {img_name0} and {img_name1}: {e}")
-            continue
-    
-    # Batch write all matches to database
-    logger.info(f"Writing {total_match_pairs} match pairs to database...")
-    for image_id0, image_id1, matches in matches_to_write:
-        write_matches_to_database(db, image_id0, image_id1, matches, logger)
-    
-    # Batch write match list to file if path provided
-    if match_list_path:
-        try:
-            os.makedirs(os.path.dirname(match_list_path), exist_ok=True)
-            with open(match_list_path, 'w') as match_file:
-                for img_name0, img_name1 in match_list_pairs:
-                    match_file.write(f"{img_name0} {img_name1}\n")
-            logger.info(f"Match list written to {match_list_path}")
-        except Exception as e:
-            logger.warning(f"Could not write match_list_path file: {e}")
-    
-    feature_matching_time = time.time() - matching_start
-    logger.info(f"Feature matching by lightglue completed in {feature_matching_time:.2f}s")
-    logger.info(f"  Matched {total_match_pairs} image pairs")
-    logger.info(f"  Total matches found: {total_matches}")
-    if total_match_pairs > 0:
-        logger.info(f"  Average matches per pair: {total_matches/total_match_pairs:.1f}")
-    logger.info("SuperPoint + LightGlue features and matches written to database")
-    
-    db.close()
-    
-    return feature_matching_time
-
-
 # --------------------------
 # Feature extraction & matching
 # --------------------------
@@ -985,234 +461,159 @@ images_path = os.path.join(args.source_path, "input")
 input_img_num = count_images_in_dir_recursive(images_path)
 
 # --- Feature extraction ---
-if args.SuperpointLightglue:
-    logger.info("Using SuperPoint + LightGlue for feature extraction and matching...")
-    logger.info(f"  Match strategy: {args.match_strategy}")
-    if args.match_strategy in ["nearest_k", "quick"]:
-        logger.info(f"  Max matches per image: {args.max_matches_per_image}")
+# Get list of images first (needed for sequential matching and feature extraction)
+image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+image_files = sorted([
+    f for f in os.listdir(images_path)
+    if os.path.splitext(f)[1].lower() in image_extensions
+])
+
+if not image_files:
+    logger.error(f"No images found in {images_path}")
+    sys.exit(1)
+
+logger.info(f"Found {len(image_files)} images")
+
+feat_extraction_cmd = [
+    colmap_command, "feature_extractor",
+    "--database_path", database_path,
+    "--image_path", images_path,
+    "--ImageReader.single_camera_per_image", str(args.single_image),
+    "--ImageReader.single_camera_per_fold", str(args.single_fold),
+    "--ImageReader.single_camera", str(args.single_camera),
+    "--ImageReader.camera_model", args.camera,
+    # "--SiftExtraction.max_num_features", str(args.max_feature_num),
+    # "--SiftExtraction.peak_threshold", "0.00667", # 0.00667
+    # "--SiftExtraction.max_num_orientations", "2", # 2
+    "--FeatureExtraction.use_gpu", str(use_gpu),
+    "--log_level", str(log_level),
+]
+logger.info("Starting feature extraction with COLMAP SIFT...")
+t0 = time.time()
+run_subprocess(feat_extraction_cmd, logger)
+feature_extraction_time = time.time() - t0
+logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
+
+# --- Feature matching ---
+logger.info("Starting feature matching...")
+t1 = time.time()
+if args.sift_match_strategy == "default":
+    feat_matching_cmd = [
+        colmap_command, "exhaustive_matcher",
+        "--database_path", database_path,
+        "--FeatureMatching.use_gpu", str(use_gpu),
+        "--log_level", str(log_level),
+    ]
+elif args.sift_match_strategy == "acc":
+    feat_matching_cmd = [
+        colmap_command, "exhaustive_matcher",
+        "--database_path", database_path,
+        "--ExhaustiveMatching.block_size", "200", # 50
+        "--FeatureMatching.use_gpu", str(use_gpu),
+        "--FeatureMatching.guided_matching", "0", # 0
+        # "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
+        "--SiftMatching.max_ratio", "0.8", # 0.8
+        "--SiftMatching.max_distance", "0.7", # 0.7
+        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
+        "--TwoViewGeometry.max_error", "4", # 4
+        "--TwoViewGeometry.confidence", "0.9999", # 0.999
+        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
+        "--TwoViewGeometry.detect_watermark", "0", # 1
+        "--TwoViewGeometry.filter_stationary_matches", "0", # 0
+        "--TwoViewGeometry.compute_relative_pose", "0", # 0
+        "--log_level", str(log_level), # 0
+    ]
+elif args.sift_match_strategy == "sequential":
+    # Generate sequential match list with circular overlap
+    logger.info("Generating sequential match pairs...")
     
-    # Initialize COLMAP database with images (without SIFT extraction)
-    logger.info("Initializing COLMAP database with image metadata (without SIFT extraction)...")
-    splg_start = time.time()
+    # Get image names from image_files
+    image_names = [os.path.basename(f) for f in image_files]
     
-    db_init_success = initialize_colmap_database(
-        database_path=database_path,
-        images_path=images_path,
-        camera_model=args.camera,
+    # Define overlap parameter from command-line argument
+    seq_overlap = args.sequential_overlap
+    
+    # Generate match pairs and save to file
+    seq_match_list_path = os.path.join(output_path, "sequential_match_list.txt")
+    match_pairs = generate_sequential_match_list(
+        image_names=image_names,
+        overlap=seq_overlap,
+        output_file=seq_match_list_path,
         logger=logger
     )
     
-    if not db_init_success:
-        logger.error("Failed to initialize database!")
-        sys.exit(1)
+    logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={seq_overlap})")
     
-    # Now run SuperPoint feature extraction    
-    image_features, image_id_map, feat_ext_time = extract_features_with_superpoint(
-        current_path,
-        database_path, 
-        images_path, 
-        max_num_keypoints=args.max_feature_num,
-        logger=logger
-    )
-    feature_extraction_time = time.time() - splg_start
-    logger.info(f"SuperPoint feature extraction time: {feature_extraction_time:.2f} s (including database writes)")
-    
-    # Run LightGlue feature matching
-    feat_match_time = match_features_with_lightglue(
-        current_path,
-        database_path,
-        image_features,
-        image_id_map,
-        match_list_path=match_list_path,
-        match_strategy=args.match_strategy,
-        max_matches_per_image=args.max_matches_per_image,
-        similarity_threshold=args.similarity_threshold,
-        logger=logger
-    )
-    feature_matching_time = feat_match_time
-    splg_time = time.time() - splg_start
-    
-    # --- Import matches using COLMAP matches_importer ---
-    # This is the recommended way to import pre-computed matches into COLMAP database
-    # Following the same approach as super_colmap.py
-    logger.info("Importing matches into COLMAP database using matches_importer...")
-    matches_importer_cmd = [
+    # Use matches_importer to import the sequential match list
+    feat_matching_cmd = [
         colmap_command, "matches_importer",
         "--database_path", database_path,
-        "--match_list_path", match_list_path,
+        "--match_list_path", seq_match_list_path,
         "--match_type", "pairs",
+        "--log_level", str(log_level),
+        "--FeatureMatching.use_gpu", str(use_gpu),
+        "--FeatureMatching.gpu_index", "-1",
         "--FeatureMatching.guided_matching", "0",
-        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers),
-        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio),
+        "--FeatureMatching.rig_verification", "0",
+        # "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
+        "--SiftMatching.max_ratio", "0.8",
+        "--SiftMatching.max_distance", "0.7",
+        "--SiftMatching.cross_check", "1",
+        "--SiftMatching.cpu_brute_force_matcher", "0",
+        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
         "--TwoViewGeometry.multiple_models", "0",
         "--TwoViewGeometry.compute_relative_pose", "0",
         "--TwoViewGeometry.detect_watermark", "0",
-        "--TwoViewGeometry.multiple_ignore_watermark", "0",
+        "--TwoViewGeometry.multiple_ignore_watermark", "1",
         "--TwoViewGeometry.watermark_detection_max_error", "4",
         "--TwoViewGeometry.filter_stationary_matches", "0",
         "--TwoViewGeometry.stationary_matches_max_error", "4",
         "--TwoViewGeometry.max_error", "4",
-        "--TwoViewGeometry.confidence", "0.9999",
-        "--TwoViewGeometry.max_num_trials", "10000"
+        "--TwoViewGeometry.confidence", "0.999",
+        "--TwoViewGeometry.max_num_trials", "10000",
+        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
+        "--TwoViewGeometry.random_seed", "-1",
     ]
-    run_subprocess(matches_importer_cmd, logger)
-    logger.info("Matches imported successfully")
-else:
-    # Use COLMAP's built-in feature extractor
-    
-    # Get list of images first (needed for sequential matching and feature extraction)
-    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-    image_files = sorted([
-        f for f in os.listdir(images_path)
-        if os.path.splitext(f)[1].lower() in image_extensions
-    ])
-    
-    if not image_files:
-        logger.error(f"No images found in {images_path}")
-        sys.exit(1)
-    
-    logger.info(f"Found {len(image_files)} images")
-    
-    feat_extraction_cmd = [
-        colmap_command, "feature_extractor",
+elif args.sift_match_strategy == "vocab_tree":
+    feat_matching_cmd = [
+        colmap_command, "vocab_tree_matcher",
         "--database_path", database_path,
-        "--image_path", images_path,
-        "--ImageReader.single_camera_per_image", str(args.single_image),
-        "--ImageReader.single_camera_per_fold", str(args.single_fold),
-        "--ImageReader.single_camera", str(args.single_camera),
-        "--ImageReader.camera_model", args.camera,
-        # "--SiftExtraction.max_num_features", str(args.max_feature_num),
-        # "--SiftExtraction.peak_threshold", "0.00667", # 0.00667
-        # "--SiftExtraction.max_num_orientations", "2", # 2
-        "--FeatureExtraction.use_gpu", str(use_gpu),
+        "--FeatureMatching.use_gpu", str(use_gpu),
         "--log_level", str(log_level),
+        "--FeatureMatching.type", "SIFT",
+        "--FeatureMatching.num_threads", str(args.num_threads), # -1
+        "--FeatureMatching.use_gpu", str(use_gpu),
+        "--FeatureMatching.gpu_index", str(args.gpu_index), # -1
+        "--FeatureMatching.guided_matching", "1",
+        "--FeatureMatching.rig_verification", "0",
+        "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
+        "--SiftMatching.max_ratio", "0.8",
+        "--SiftMatching.max_distance", "0.7",
+        "--SiftMatching.cross_check", "1",
+        "--SiftMatching.cpu_brute_force_matcher", "0",
+        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
+        "--TwoViewGeometry.multiple_models", "0",
+        "--TwoViewGeometry.compute_relative_pose", "0",
+        "--TwoViewGeometry.detect_watermark", "0",
+        "--TwoViewGeometry.multiple_ignore_watermark", "1",
+        "--TwoViewGeometry.watermark_detection_max_error", "4",
+        "--TwoViewGeometry.filter_stationary_matches", "0",
+        "--TwoViewGeometry.stationary_matches_max_error", "4",
+        "--TwoViewGeometry.max_error", "4",
+        "--TwoViewGeometry.confidence", "0.999",
+        "--TwoViewGeometry.max_num_trials", "10000",
+        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
+        "--TwoViewGeometry.random_seed", "-1",
+        "--VocabTreeMatching.num_images", "100",
+        "--VocabTreeMatching.num_nearest_neighbors", "5",
+        "--VocabTreeMatching.num_checks", "64",
+        "--VocabTreeMatching.num_images_after_verification", "0",
+        "--VocabTreeMatching.max_num_features", "-1"
     ]
-    logger.info("Starting feature extraction with COLMAP SIFT...")
-    t0 = time.time()
-    run_subprocess(feat_extraction_cmd, logger)
-    feature_extraction_time = time.time() - t0
-    logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 
-    # --- Feature matching ---
-    logger.info("Starting feature matching...")
-    t1 = time.time()
-    if args.sift_match_strategy == "default":
-        feat_matching_cmd = [
-            colmap_command, "exhaustive_matcher",
-            "--database_path", database_path,
-            "--FeatureMatching.use_gpu", str(use_gpu),
-            "--log_level", str(log_level),
-        ]
-    elif args.sift_match_strategy == "acc":
-        feat_matching_cmd = [
-            colmap_command, "exhaustive_matcher",
-            "--database_path", database_path,
-            "--ExhaustiveMatching.block_size", "200", # 50
-            "--FeatureMatching.use_gpu", str(use_gpu),
-            "--FeatureMatching.guided_matching", "0", # 0
-            # "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
-            "--SiftMatching.max_ratio", "0.8", # 0.8
-            "--SiftMatching.max_distance", "0.7", # 0.7
-            "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
-            "--TwoViewGeometry.max_error", "4", # 4
-            "--TwoViewGeometry.confidence", "0.9999", # 0.999
-            "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
-            "--TwoViewGeometry.detect_watermark", "0", # 1
-            "--TwoViewGeometry.filter_stationary_matches", "0", # 0
-            "--TwoViewGeometry.compute_relative_pose", "0", # 0
-            "--log_level", str(log_level), # 0
-        ]
-    elif args.sift_match_strategy == "sequential":
-        # Generate sequential match list with circular overlap
-        logger.info("Generating sequential match pairs...")
-        
-        # Get image names from image_files
-        image_names = [os.path.basename(f) for f in image_files]
-        
-        # Define overlap parameter from command-line argument
-        seq_overlap = args.sequential_overlap
-        
-        # Generate match pairs and save to file
-        seq_match_list_path = os.path.join(output_path, "sequential_match_list.txt")
-        match_pairs = generate_sequential_match_list(
-            image_names=image_names,
-            overlap=seq_overlap,
-            output_file=seq_match_list_path,
-            logger=logger
-        )
-        
-        logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={seq_overlap})")
-        
-        # Use matches_importer to import the sequential match list
-        feat_matching_cmd = [
-            colmap_command, "matches_importer",
-            "--database_path", database_path,
-            "--match_list_path", seq_match_list_path,
-            "--match_type", "pairs",
-            "--log_level", str(log_level),
-            "--FeatureMatching.use_gpu", str(use_gpu),
-            "--FeatureMatching.gpu_index", "-1",
-            "--FeatureMatching.guided_matching", "0",
-            "--FeatureMatching.rig_verification", "0",
-            # "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
-            "--SiftMatching.max_ratio", "0.8",
-            "--SiftMatching.max_distance", "0.7",
-            "--SiftMatching.cross_check", "1",
-            "--SiftMatching.cpu_brute_force_matcher", "0",
-            "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
-            "--TwoViewGeometry.multiple_models", "0",
-            "--TwoViewGeometry.compute_relative_pose", "0",
-            "--TwoViewGeometry.detect_watermark", "0",
-            "--TwoViewGeometry.multiple_ignore_watermark", "1",
-            "--TwoViewGeometry.watermark_detection_max_error", "4",
-            "--TwoViewGeometry.filter_stationary_matches", "0",
-            "--TwoViewGeometry.stationary_matches_max_error", "4",
-            "--TwoViewGeometry.max_error", "4",
-            "--TwoViewGeometry.confidence", "0.999",
-            "--TwoViewGeometry.max_num_trials", "10000",
-            "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
-            "--TwoViewGeometry.random_seed", "-1",
-        ]
-    elif args.sift_match_strategy == "vocab_tree":
-        feat_matching_cmd = [
-            colmap_command, "vocab_tree_matcher",
-            "--database_path", database_path,
-            "--FeatureMatching.use_gpu", str(use_gpu),
-            "--log_level", str(log_level),
-            "--FeatureMatching.type", "SIFT",
-            "--FeatureMatching.num_threads", str(args.num_threads), # -1
-            "--FeatureMatching.use_gpu", str(use_gpu),
-            "--FeatureMatching.gpu_index", str(args.gpu_index), # -1
-            "--FeatureMatching.guided_matching", "1",
-            "--FeatureMatching.rig_verification", "0",
-            "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
-            "--SiftMatching.max_ratio", "0.8",
-            "--SiftMatching.max_distance", "0.7",
-            "--SiftMatching.cross_check", "1",
-            "--SiftMatching.cpu_brute_force_matcher", "0",
-            "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
-            "--TwoViewGeometry.multiple_models", "0",
-            "--TwoViewGeometry.compute_relative_pose", "0",
-            "--TwoViewGeometry.detect_watermark", "0",
-            "--TwoViewGeometry.multiple_ignore_watermark", "1",
-            "--TwoViewGeometry.watermark_detection_max_error", "4",
-            "--TwoViewGeometry.filter_stationary_matches", "0",
-            "--TwoViewGeometry.stationary_matches_max_error", "4",
-            "--TwoViewGeometry.max_error", "4",
-            "--TwoViewGeometry.confidence", "0.999",
-            "--TwoViewGeometry.max_num_trials", "10000",
-            "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
-            "--TwoViewGeometry.random_seed", "-1",
-            "--VocabTreeMatching.num_images", "100",
-            "--VocabTreeMatching.num_nearest_neighbors", "5",
-            "--VocabTreeMatching.num_checks", "64",
-            "--VocabTreeMatching.num_images_after_verification", "0",
-            "--VocabTreeMatching.max_num_features", "-1"
-        ]
-
-    run_subprocess(feat_matching_cmd, logger)
-    feature_matching_time = time.time() - t1
-    logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
+run_subprocess(feat_matching_cmd, logger)
+feature_matching_time = time.time() - t1
+logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
 ## --------- visualize matches (optional) ---------
 if args.visualize_matches:
