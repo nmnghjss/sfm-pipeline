@@ -32,7 +32,7 @@ parser.add_argument("--single_camera", "-sc",default="1", type=str)
 parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--alg", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
-parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--SuperpointLightglue", "-splg", action="store_true", help="Use SuperPoint features instead of SIFT")
 parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", 
                     choices=["exhaustive", "nearest_k", "quick", "threshold"],
@@ -49,6 +49,7 @@ parser.add_argument("--log_level", default="0", type=int, help="Set the logging 
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 args = parser.parse_args()
 
+args.SuperpointLightglue = True  # 强制使用 SuperPoint + LightGlue
 
 # =====================key parameter =====================================================
 min_num_inliers = args.min_num_inliers
@@ -118,6 +119,7 @@ fh.setLevel(log_level)
 fh.setFormatter(log_formatter)
 logger.addHandler(fh)
 
+logger.info("use_gpu: {}".format(use_gpu))
 
 # --------------------------
 # Timing variables
@@ -839,7 +841,7 @@ def match_features_with_lightglue(
     weight_path = "checkpoints/superpoint_lightglue_v0-1_arxiv.pth"
     weight_path = os.path.join(weights_root, weight_path)
     matcher = LightGlue(path_or_url=weight_path).eval().to(device)
-    
+    logger.info(f"LightGlue Using device: {device}")
     # Connect to database
     try:
         db = COLMAPDatabase.connect(database_path)
@@ -1254,7 +1256,7 @@ if args.alg == "acc":
         "--Mapper.ba_global_points_ratio", "2.0", # 1.1
         "--Mapper.ba_global_frames_freq", "5000", # 5000
         "--Mapper.ba_global_points_freq", "250000", # 250000
-        "--Mapper.ba_global_max_num_iterations", "20", # 50 --> 20 --> 25
+        "--Mapper.ba_global_max_num_iterations", "25", # 50 --> 20 --> 25
         "--Mapper.ba_global_max_refinements", "2", # 5
         "--Mapper.ba_global_max_refinement_change", "0.001", # 0.0005
         "--Mapper.ba_refine_focal_length", "1", # 1
