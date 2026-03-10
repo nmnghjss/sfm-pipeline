@@ -9,7 +9,7 @@ from utils import *
 from pathlib import Path
 import numpy as np
 import cv2
-from database import COLMAPDatabase, ReadColmapDatabase
+from database import COLMAPDatabase, ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
 
 # --------------------------
@@ -39,10 +39,16 @@ parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
-parser.add_argument("--sift_match_strategy", "-sms", type=str, default="sequential", choices=["default","acc", "sequential", "vocab_tree"], help="Matching strategy for SIFT features")
+parser.add_argument("--sift_match_strategy", "-sms", type=str, default="acc", choices=["default", "acc", "sequential", "vocab_tree"], help="Matching strategy for SIFT features")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
+parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
+parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.6, help="Inlier ratio threshold for filtering matches before mapping")
+parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
+parser.add_argument("--local_ba_interations", type=int, default=15, help="Maximum number of iterations for local bundle adjustment")
+parser.add_argument("--global_ba_interations", type=int, default=20, help="Maximum number of iterations for global bundle adjustment")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
+parser.add_argument("--clean", action="store_true", help="Whether to clean output files before SfM")
 args = parser.parse_args()
 
 
@@ -76,7 +82,7 @@ if os_type == 'Windows':
 else:
     colmap_path = "colmap"
     glomap_path = "glomap"
-    vocab_path = os.path.join(current_path, "vocab/vocab_tree_faiss_flickr100K_words256K.bin")
+    vocab_path = os.path.join(current_path, "vocab/vocab_tree_faiss_flickr100K_words32K.bin")
 colmap_command = args.colmap_executable if args.colmap_executable else colmap_path
 glomap_command = args.glomap_executable if args.glomap_executable else glomap_path
 
@@ -114,7 +120,13 @@ fh.setLevel(log_level)
 fh.setFormatter(log_formatter)
 logger.addHandler(fh)
 
-
+# -------------------------------
+if args.clean:
+    logger.info(f"Cleaning output directory: {output_path}")
+    shutil.rmtree(os.path.join(output_path, "sparse"), ignore_errors=True)
+    shutil.rmtree(os.path.join(output_path, "dense"), ignore_errors=True)
+    shutil.rmtree(os.path.join(output_path, "images"), ignore_errors=True)
+    shutil.rmtree(os.path.join(output_path, "distorted"), ignore_errors=True)
 # --------------------------
 # Timing variables
 # --------------------------
@@ -482,7 +494,7 @@ feat_extraction_cmd = [
     "--ImageReader.single_camera_per_fold", str(args.single_fold),
     "--ImageReader.single_camera", str(args.single_camera),
     "--ImageReader.camera_model", args.camera,
-    # "--SiftExtraction.max_num_features", str(args.max_feature_num),
+    "--SiftExtraction.max_num_features", str(args.max_feature_num),
     # "--SiftExtraction.peak_threshold", "0.00667", # 0.00667
     # "--SiftExtraction.max_num_orientations", "2", # 2
     "--FeatureExtraction.use_gpu", str(use_gpu),
@@ -514,7 +526,7 @@ elif args.sift_match_strategy == "acc":
         # "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
         "--SiftMatching.max_ratio", "0.8", # 0.8
         "--SiftMatching.max_distance", "0.7", # 0.7
-        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
+        "--TwoViewGeometry.min_num_inliers", "50", # 15
         "--TwoViewGeometry.max_error", "4", # 4
         "--TwoViewGeometry.confidence", "0.9999", # 0.999
         "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
@@ -579,14 +591,12 @@ elif args.sift_match_strategy == "vocab_tree":
         colmap_command, "vocab_tree_matcher",
         "--database_path", database_path,
         "--FeatureMatching.use_gpu", str(use_gpu),
+        "--FeatureMatching.num_threads", "-1",
         "--log_level", str(log_level),
         "--FeatureMatching.type", "SIFT",
-        "--FeatureMatching.num_threads", str(args.num_threads), # -1
-        "--FeatureMatching.use_gpu", str(use_gpu),
-        "--FeatureMatching.gpu_index", str(args.gpu_index), # -1
-        "--FeatureMatching.guided_matching", "1",
+        "--FeatureMatching.guided_matching", "0",
         "--FeatureMatching.rig_verification", "0",
-        "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
+        # "--FeatureMatching.max_num_matches", str(args.max_feature_num), # 32768
         "--SiftMatching.max_ratio", "0.8",
         "--SiftMatching.max_distance", "0.7",
         "--SiftMatching.cross_check", "1",
@@ -604,11 +614,12 @@ elif args.sift_match_strategy == "vocab_tree":
         "--TwoViewGeometry.max_num_trials", "10000",
         "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
         "--TwoViewGeometry.random_seed", "-1",
-        "--VocabTreeMatching.num_images", "100",
+        "--VocabTreeMatching.num_images", "50",
         "--VocabTreeMatching.num_nearest_neighbors", "5",
         "--VocabTreeMatching.num_checks", "64",
-        "--VocabTreeMatching.num_images_after_verification", "0",
-        "--VocabTreeMatching.max_num_features", "-1"
+        "--VocabTreeMatching.num_images_after_verification", "30",
+        "--VocabTreeMatching.max_num_features", "-1",
+        # "--VocabTreeMatching.vocab_tree_path", vocab_path
     ]
 
 run_subprocess(feat_matching_cmd, logger)
@@ -628,6 +639,18 @@ if args.visualize_matches:
         visualize_image_pairs(view_graph, images, images_path, vis_dir, num_pairs=100)
         print("Visualization completed.")
 
+
+## ----------------- filt matches by inliers (optional) -----------------
+if args.filt_match:
+    logger.info("Filtering matches by inliers before mapping...")
+    filted_paris_num = filter_matches_by_inliers(
+        database_path=database_path,
+        min_num_inliers=args.filter_inlier_num_threshold,
+        min_inlier_ratio=args.filter_inlier_ratio_threshold,
+        logger=logger
+    )
+    logger.info(f"Filtering done. removed pairs: {filted_paris_num}")
+
 # --------------------------
 # Mapper / Bundle Adjustment
 # --------------------------
@@ -641,21 +664,21 @@ if args.alg == "acc":
         "--image_path", images_path,
         "--output_path", distorted_sparse_path,
         "--Mapper.num_threads", "-1",
-        "--Mapper.min_num_matches", "25", # 15
-        "--Mapper.init_num_trials", "200", # 200
-        "--Mapper.init_min_num_inliers", "100", # 100
+        "--Mapper.min_num_matches", "30", # 15
+        "--Mapper.init_num_trials", "500", # 200
+        "--Mapper.init_min_num_inliers", "200", # 100
         "--Mapper.init_max_error", "4", # 4
         "--Mapper.init_min_tri_angle", "16", # 16
         "--Mapper.ba_local_min_tri_angle", "6", # 6
         "--Mapper.ba_local_num_images", "6", # 6
-        "--Mapper.ba_local_max_num_iterations", "12", # 25
+        "--Mapper.ba_local_max_num_iterations", str(args.local_ba_interations), # 25
         "--Mapper.ba_local_max_refinements", "2", # 2
         "--Mapper.ba_local_max_refinement_change", "0.001", # 0.001
         "--Mapper.ba_global_frames_ratio", "2.0", # 1.1
         "--Mapper.ba_global_points_ratio", "2.0", # 1.1
         "--Mapper.ba_global_frames_freq", "5000", # 5000
         "--Mapper.ba_global_points_freq", "250000", # 250000
-        "--Mapper.ba_global_max_num_iterations", "20", # 50 --> 20 --> 25
+        "--Mapper.ba_global_max_num_iterations", str(args.global_ba_interations), # 50 --> 20 --> 25
         "--Mapper.ba_global_max_refinements", "2", # 5
         "--Mapper.ba_global_max_refinement_change", "0.001", # 0.0005
         "--Mapper.ba_refine_focal_length", "1", # 1

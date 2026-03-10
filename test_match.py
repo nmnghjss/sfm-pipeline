@@ -1,3 +1,5 @@
+import os
+
 import torch
 import numpy as np
 import cv2
@@ -6,14 +8,29 @@ from lightglue.utils import load_image, rbd, numpy_image_to_torch
 import matplotlib.pyplot as plt
 import time
 
-# SuperPoint+LightGlue
+# ALIKED+LightGlue (or change extractor to use SuperPoint+LightGlue)
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 max_num_keypoints = 2048
-feature_weights_path = "checkpoints/superpoint_v1.pth"
-matcher_weight_path = "checkpoints/superpoint_lightglue_v0-1_arxiv.pth"
-extractor = SuperPoint(weights_path=feature_weights_path, max_num_keypoints=max_num_keypoints).eval().to(device)
-matcher = LightGlue(path_or_url=matcher_weight_path).eval().to(device)
+
+# For superpoint+lightglue:
+# feature_weights_path = "checkpoints/superpoint_v1.pth"
+# matcher_weight_path = "checkpoints/superpoint_lightglue_v0-1_arxiv.pth"
+# extractor = SuperPoint(weights_path=feature_weights_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+# matcher = LightGlue(path_or_url=matcher_weight_path).eval().to(device)
+
+
+# For ALIKED+LightGlue:
+# - ALIKED has 128-dim descriptors, so need aliked_lightglue matcher
+local_weights_root = "checkpoints/pth"
+local_aliked_path = os.path.join(local_weights_root, "aliked-n16rot.pth")
+extractor = ALIKED(local_path=local_aliked_path, max_num_keypoints=2048).eval().to(device)
+matcher = LightGlue(features='aliked', local_weights_root=local_weights_root).eval().to(device)
+
+# Alternative: SuperPoint+LightGlue (uncomment to use)
+# feature_weights_path = "checkpoints/superpoint_v1.pth"
+# extractor = SuperPoint(weights_path=feature_weights_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+# matcher = LightGlue(features='superpoint').eval().to(device)
 
 # or DISK+LightGlue, ALIKED+LightGlue or SIFT+LightGlue
 # extractor = DISK(max_num_keypoints=2048).eval().to(device)  # load the extractor
@@ -24,12 +41,12 @@ matcher = LightGlue(path_or_url=matcher_weight_path).eval().to(device)
 # matcher = LightGlue(features='sift').eval().cuda()  # load the matcher
 
 # load each image as a torch.Tensor on GPU with shape (3,H,W), normalized in [0,1]
-image0_path = "E:\\Test1234\\data19\\input\\0001.jpg"
-image1_path = "E:\\Test1234\\data19\\input\\0010.jpg"
+image0_path = "E:\\debug\\input\\ADSC00153_undist.jpg"
+image1_path = "mirrored_left_right.jpg"
 
 start_time = time.time()
-image0 = load_image(image0_path).cuda()
-image1 = load_image(image1_path).cuda()
+image0 = load_image(image0_path).cuda() / 255.0
+image1 = load_image(image1_path).cuda() / 255.0
 end_time = time.time()
 print(f"Image loading time: {end_time - start_time:.2f} seconds")
 

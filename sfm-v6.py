@@ -11,7 +11,7 @@ import torch
 import numpy as np
 import cv2
 import sqlite3
-from lightglue import LightGlue, SuperPoint
+from lightglue import ALIKED, LightGlue, SuperPoint
 from lightglue.utils import load_image, rbd, load_image_use_torchvision
 from database import COLMAPDatabase, ReadColmapDatabase
 from visualization import visualize_image_pairs
@@ -32,6 +32,7 @@ parser.add_argument("--single_camera", "-sc",default="1", type=str)
 parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--alg", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
+parser.add_argument("--feature_type", "-ft", default="aliked", type=str, choices=["superpoint", "aliked"], help="Feature type to use: superpoint or aliked")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--SuperpointLightglue", "-splg", action="store_true", help="Use SuperPoint features instead of SIFT")
 parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", 
@@ -39,6 +40,8 @@ parser.add_argument("--match_strategy", "-ms", type=str, default="threshold",
                     help="Matching strategy: exhaustive (all pairs), nearest_k (top-k similar), quick (fast heuristic), threshold (similarity threshold based)")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
+parser.add_argument("--min_matches_per_image", "-mni", type=int, default=20,
+                    help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
@@ -180,14 +183,17 @@ def initialize_colmap_database(
         logger.info(f"Found {len(image_files)} images")
         
         # Add single camera to database (using first image dimensions)
+        # Use PIL to read image dimensions only (more efficient and handles non-ASCII paths)
         first_image_path = os.path.join(images_path, image_files[0])
-        img = cv2.imread(first_image_path)
-        if img is None:
-            logger.error(f"Failed to load first image: {first_image_path}")
+        try:
+            from PIL import Image
+            img = Image.open(first_image_path)
+            width, height = img.size
+        except Exception as e:
+            logger.error(f"Failed to read first image dimensions: {first_image_path}. Error: {e}")
             db.close()
             return False
         
-        height, width = img.shape[:2]
         logger.info(f"Image dimensions: {width}x{height}")
         
         # Map camera model string to COLMAP model ID    
@@ -364,7 +370,7 @@ def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.nd
         logger.warning(f"Failed to write matches to database for image pair ({image_id0}, {image_id1}): {e}")
 
 
-def find_similar_images_parallel(image_features, k=10, threshold=None, logger=None):
+def find_similar_images_parallel(image_features, max_num=30, min_num=20, threshold=None, logger=None):
     """
     计算图像相似度（并行优化），找到最相似的K张图或根据阈值找相似图。
     使用批量cosine_similarity计算，效率高。
@@ -430,9 +436,12 @@ def find_similar_images_parallel(image_features, k=10, threshold=None, logger=No
             similar_mask = similarities > threshold
             similar_indices = torch.where(similar_mask)[0]
             print(f"Image {i} has {len(similar_indices)} similar images above threshold {threshold}")
-            
+            if len(similar_indices) < min_num:                
+                topk_vals, similar_indices = torch.topk(similarities, min(min_num+1, len(valid_images)))
+                print(f"  Not enough similar images above threshold, keeping top-{min_num} instead (found {len(similar_indices)})")
+
             # 如果大于阈值的匹配太多，只取前30个最相似的
-            max_similar_num = 30
+            max_similar_num = max_num
             if len(similar_indices) > max_similar_num:
                 # 获取这些索引对应的相似度值
                 similar_sims = similarities[similar_indices]
@@ -571,7 +580,8 @@ def find_similar_images_quick(image_features, k=10, logger=None):
 
 
 def extract_features_with_superpoint(
-    weights_root: str,
+    feature_type: str,
+    local_weights_root: str,
     database_path: str,
     images_path: str,
     max_num_keypoints: int = 2048,
@@ -598,10 +608,14 @@ def extract_features_with_superpoint(
     logger.info("Initializing SuperPoint model...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Using device: {device}")
-    weights_path = "checkpoints/superpoint_v1.pth"
-    weights_path = os.path.join(weights_root, weights_path)
-    extractor = SuperPoint(weights_path=weights_path, max_num_keypoints=max_num_keypoints).eval().to(device)
-    
+    # local_weights_root = "checkpoints/pth"
+    if feature_type.lower() == "aliked":
+        local_aliked_path = os.path.join(local_weights_root, "checkpoints/pth/aliked-n16rot.pth")
+        extractor = ALIKED(local_path=local_aliked_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+    else:
+        local_superpoint_path = os.path.join(local_weights_root, "checkpoints/pth/superpoint_v1.pth")
+        extractor = SuperPoint(weights_path=local_superpoint_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+
     # Get list of images
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
     image_files = sorted([
@@ -807,12 +821,14 @@ def generate_sequential_match_list(
 
 def match_features_with_lightglue(
     weights_root: str,
+    feature_type:str,
     database_path: str,
     image_features: dict,
     image_id_map: dict,
     match_list_path: str = None,
     match_strategy: str = "nearest_k",
-    max_matches_per_image: int = 15,
+    max_matches_per_image: int = 30,
+    min_matches_per_image: int = 20,
     similarity_threshold: float = None,
     logger: logging.Logger = None
 ) -> tuple:
@@ -838,9 +854,10 @@ def match_features_with_lightglue(
     # Initialize LightGlue matcher
     logger.info("Initializing LightGlue matcher...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    weight_path = "checkpoints/superpoint_lightglue_v0-1_arxiv.pth"
+    weight_path = f"checkpoints/pth/{feature_type}_lightglue_v0-1_arxiv.pth"
     weight_path = os.path.join(weights_root, weight_path)
-    matcher = LightGlue(path_or_url=weight_path).eval().to(device)
+    matcher = LightGlue(features=feature_type, path_or_url=weight_path).eval().to(device)
+
     logger.info(f"LightGlue Using device: {device}")
     # Connect to database
     try:
@@ -872,13 +889,13 @@ def match_features_with_lightglue(
     elif match_strategy == "nearest_k":
         logger.info(f"Finding top-{max_matches_per_image} similar images for each (parallel)...")
         similarity_start = time.time()
-        match_pairs = find_similar_images_parallel(image_features, k=max_matches_per_image, threshold=None, logger=logger)
+        match_pairs = find_similar_images_parallel(image_features, max_num=max_matches_per_image, min_num=min_matches_per_image, threshold=None, logger=logger)
         logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
     
     elif match_strategy == "threshold":
         logger.info(f"Using similarity threshold matching (threshold={similarity_threshold})...")
         similarity_start = time.time()
-        match_pairs = find_similar_images_parallel(image_features, k=None, threshold=similarity_threshold, logger=logger)
+        match_pairs = find_similar_images_parallel(image_features, max_num=max_matches_per_image, min_num=min_matches_per_image, threshold=similarity_threshold, logger=logger)
         logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
     
     elif match_strategy == "quick":
@@ -1010,6 +1027,7 @@ if args.SuperpointLightglue:
     
     # Now run SuperPoint feature extraction    
     image_features, image_id_map, feat_ext_time = extract_features_with_superpoint(
+        args.feature_type,
         current_path,
         database_path, 
         images_path, 
@@ -1022,12 +1040,14 @@ if args.SuperpointLightglue:
     # Run LightGlue feature matching
     feat_match_time = match_features_with_lightglue(
         current_path,
+        args.feature_type,
         database_path,
         image_features,
         image_id_map,
         match_list_path=match_list_path,
         match_strategy=args.match_strategy,
         max_matches_per_image=args.max_matches_per_image,
+        min_matches_per_image=args.min_matches_per_image,
         similarity_threshold=args.similarity_threshold,
         logger=logger
     )

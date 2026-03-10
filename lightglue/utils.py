@@ -74,12 +74,17 @@ def read_image(path: Path, grayscale: bool = False) -> np.ndarray:
     """Read an image from path as RGB or grayscale"""
     if not Path(path).exists():
         raise FileNotFoundError(f"No image at path {path}.")
-    mode = cv2.IMREAD_GRAYSCALE if grayscale else cv2.IMREAD_COLOR
-    image = cv2.imread(str(path), mode)
+    # Use np.fromfile to handle non-ASCII paths (including Chinese characters) on Windows
+    # cv2.imread doesn't handle UTF-8 paths well on Windows
+    image_data = np.fromfile(str(path), dtype=np.uint8)
+    if grayscale:
+        image = cv2.imdecode(image_data, cv2.IMREAD_GRAYSCALE)
+    else:
+        image = cv2.imdecode(image_data, cv2.IMREAD_COLOR)
     if image is None:
         raise IOError(f"Could not read image at {path}.")
     if not grayscale:
-        image = image[..., ::-1]
+        image = image[..., ::-1]  # BGR to RGB
     return image
 
 
@@ -94,6 +99,7 @@ def numpy_image_to_torch(image: np.ndarray) -> torch.Tensor:
     
     # t3 = time.time()
     # return torch.tensor(image / 255.0, dtype=torch.float)
+
     # 使用更高效的方法：先转为float32，然后直接共享内存（零拷贝）
     image_float32 = image.astype(np.float32, copy=False)  # copy=False避免不必要的复制
     # result = torch.from_numpy(image_float32).div_(255.0)  # div_是就地操作，更高效

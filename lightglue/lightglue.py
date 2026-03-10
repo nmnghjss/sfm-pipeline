@@ -1,4 +1,5 @@
 import warnings
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable, List, Optional, Tuple
@@ -346,7 +347,7 @@ class LightGlue(nn.Module):
     required_data_keys = ["image0", "image1"]
 
     version = "v0.1_arxiv"
-    url = "https://github.com/cvg/LightGlue/releases/download/{}/{}_lightglue.pth"
+    url = "https://github.com/cvg/LightGlue/releases/download/{}/{}.pth"
 
     features = {
         "superpoint": {
@@ -361,6 +362,10 @@ class LightGlue(nn.Module):
             "weights": "aliked_lightglue",
             "input_dim": 128,
         },
+        "raco-aliked": {
+            "weights": "raco_aliked_lightglue",
+            "input_dim": 128,
+        },
         "sift": {
             "weights": "sift_lightglue",
             "input_dim": 128,
@@ -373,9 +378,17 @@ class LightGlue(nn.Module):
         },
     }
 
-    def __init__(self, path_or_url=None, **conf) -> None:
+    def __init__(self, features="superpoint", local_path=None,**conf) -> None:
         super().__init__()
         self.conf = conf = SimpleNamespace(**{**self.default_conf, **conf})
+        if features is not None:
+            if features not in self.features:
+                raise ValueError(
+                    f"Unsupported features: {features} not in "
+                    f"{{{','.join(self.features)}}}"
+                )
+            for k, v in self.features[features].items():
+                setattr(conf, k, v)
 
         if conf.input_dim != conf.descriptor_dim:
             self.input_proj = nn.Linear(conf.input_dim, conf.descriptor_dim, bias=True)
@@ -405,24 +418,29 @@ class LightGlue(nn.Module):
         )
 
         state_dict = None
-                
-        if path_or_url is not None:
-            if path_or_url.startswith(('http://', 'https://')):
-                # 远程URL
-                state_dict = torch.hub.load_state_dict_from_url(path_or_url)
-            else:
-                # 本地路径
-                import os
-                if os.path.exists(path_or_url):
-                    state_dict = torch.load(path_or_url, map_location="cpu")
-                else:
-                    raise FileNotFoundError(f"Model file not found: {path_or_url}")
-        else:
-            # 使用默认的远程URL
+        if features is not None:
             fname = f"{conf.weights}_{self.version.replace('.', '-')}.pth"
-            state_dict = torch.hub.load_state_dict_from_url(
-                self.url.format(self.version, features), file_name=fname
-            )
+            print("LightGlue weights: {}".format(fname))
+            if local_path is not None:
+                path = os.path.join(local_path, fname)
+                print("Looking for local weights at {}".format(path))
+                if os.path.isfile(path):
+                    state_dict = torch.load(str(path), map_location="cpu")
+                else:
+                    warnings.warn(
+                        f"Local weights not found at {path}, trying to download from the official repository.",
+                        stacklevel=2,
+                    )
+            if state_dict is None:
+                state_dict = torch.hub.load_state_dict_from_url(
+                    self.url.format(self.version, self.conf.weights),
+                    file_name=fname,
+                )
+            self.load_state_dict(state_dict, strict=False)
+        elif conf.weights is not None:
+            path = Path(__file__).parent
+            path = path / "weights/{}.pth".format(self.conf.weights)
+            state_dict = torch.load(str(path), map_location="cpu")
 
         if state_dict:
             # rename old state dict entries

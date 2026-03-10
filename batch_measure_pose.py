@@ -6,7 +6,7 @@ import numpy as np
 # from get_depth_maps import get_depth_maps
 # from correct_depth_maps import compute_scale_and_offset
 # from train import *
-from utils import find_directories_by_name
+from utils import find_directories_by_name, count_images_in_dir
 from read_write_model import read_model
 from measure_pose import align_and_compute_error, PoseError
 import csv
@@ -123,8 +123,15 @@ if __name__ == '__main__':
         data_path = os.path.dirname(dataset_dir)        
         print(f"Processing dataset at: {data_path}")
 
+        input_images_num = count_images_in_dir(os.path.join(data_path, "input"))
+        print(f"    输入图像数量: {input_images_num}")
+
         base_sfm_dir = os.path.join(data_path, args.base_dir, "sparse", "0")
         update_sfm_dir = os.path.join(data_path, args.update_dir, "sparse", "0")
+        base_registered_num = count_images_in_dir(os.path.join(data_path, args.base_dir, "images"))
+        update_registered_num = count_images_in_dir(os.path.join(data_path, args.update_dir, "images"))
+        print(f"    基线 SfM 注册图像数量: {base_registered_num}")
+        print(f"    更新 SfM 注册图像数量: {update_registered_num}")
 
         base_cameras, base_images, base_points3D = read_model(base_sfm_dir, ext=".bin")
         update_cameras, update_images, update_points3D = read_model(update_sfm_dir, ext=".bin")
@@ -136,6 +143,12 @@ if __name__ == '__main__':
             errors.rotate_angle_error_mean = 10000
         else:
             errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)
+            errors.base_registered_num = base_registered_num
+            errors.update_registered_num = update_registered_num
+            errors.base_registered_ratio = base_registered_num / input_images_num if input_images_num > 0 else 0.0
+            errors.update_registered_ratio = update_registered_num / input_images_num if input_images_num > 0 else 0.0
+            errors.registered_diff = update_registered_num - base_registered_num
+            errors.registered_ratio_diff = errors.update_registered_ratio - errors.base_registered_ratio
 
         if errors is not None:
             pose_erroe_list[data_path] = errors
@@ -155,10 +168,15 @@ if __name__ == '__main__':
         avg_pose_error.ate_error_mean = np.mean([e.ate_error_mean for e in pose_erroe_list.values()])
         avg_pose_error.ate_error_std = np.mean([e.ate_error_std for e in pose_erroe_list.values()])
         avg_pose_error.ate_error_rmse = np.mean([e.ate_error_rmse for e in pose_erroe_list.values()])
+        avg_pose_error.ate_error_median = np.mean([e.ate_error_median for e in pose_erroe_list.values()])
+        avg_pose_error.ate_error_max = np.mean([e.ate_error_max for e in pose_erroe_list.values()])
+        avg_pose_error.ate_error_p90 = np.mean([e.ate_error_p90 for e in pose_erroe_list.values()])
         avg_pose_error.rotate_angle_error_mean = np.mean([e.rotate_angle_error_mean for e in pose_erroe_list.values()])
         avg_pose_error.rotate_angle_error_std = np.mean([e.rotate_angle_error_std for e in pose_erroe_list.values()])
         avg_pose_error.rotate_angle_error_rmse = np.mean([e.rotate_angle_error_rmse for e in pose_erroe_list.values()])
         avg_pose_error.rotate_angle_error_median = np.mean([e.rotate_angle_error_median for e in pose_erroe_list.values()]) 
+        avg_pose_error.rotate_angle_error_max = np.mean([e.rotate_angle_error_max for e in pose_erroe_list.values()])
+        avg_pose_error.rotate_angle_error_p90 = np.mean([e.rotate_angle_error_p90 for e in pose_erroe_list.values()])
         # 打印均值信息
         print("\n平均值统计:")
         print("-" * 60)
@@ -168,8 +186,9 @@ if __name__ == '__main__':
         print("没有有效的误差数据可供计算平均值。")
  
     custom_fieldnames = [
-        'ate_error_mean', 'ate_error_median', 'ate_error_std', 'ate_error_rmse', 'ate_error_p90',
-        'rotate_angle_error_mean', 'rotate_angle_error_median', 'rotate_angle_error_std', 'rotate_angle_error_rmse', "rotate_angle_error_p90",
+        'base_registered_num', 'update_registered_num', 'base_registered_ratio', 'update_registered_ratio', 'registered_ratio_diff',
+        'ate_error_mean', 'ate_error_median', 'ate_error_std', 'ate_error_rmse', 'ate_error_p90', 'ate_error_max',
+        'rotate_angle_error_mean', 'rotate_angle_error_median', 'rotate_angle_error_std', 'rotate_angle_error_rmse', "rotate_angle_error_p90", 'rotate_angle_error_max',
         'registered_diff'
     ]
     

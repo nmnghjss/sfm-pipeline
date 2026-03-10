@@ -611,7 +611,7 @@ class SDDH(nn.Module):
 
 class ALIKED(Extractor):
     default_conf = {
-        "model_name": "aliked-n16",
+        "model_name": "aliked-n16rot",
         "max_num_keypoints": -1,
         "detection_threshold": 0.2,
         "nms_radius": 2,
@@ -634,7 +634,7 @@ class ALIKED(Extractor):
 
     required_data_keys = ["image"]
 
-    def __init__(self, **conf):
+    def __init__(self, local_path=None, **conf):
         super().__init__(**conf)  # Update with default configuration.
         conf = self.conf
         c1, c2, c3, c4, dim, K, M = self.cfgs[conf.model_name]
@@ -689,9 +689,16 @@ class ALIKED(Extractor):
             ),
         )
 
-        state_dict = torch.hub.load_state_dict_from_url(
-            self.checkpoint_url.format(conf.model_name), map_location="cpu"
-        )
+        state_dict = None
+        if local_path is not None:
+            state_dict = torch.load(local_path, map_location="cpu")
+
+        if state_dict is not None:
+            self.load_state_dict(state_dict, strict=True)
+        else:
+            state_dict = torch.hub.load_state_dict_from_url(
+                self.checkpoint_url.format(conf.model_name), map_location="cpu"
+            )
         self.load_state_dict(state_dict, strict=True)
 
     def get_resblock(self, c_in, c_out, conv_type, mask):

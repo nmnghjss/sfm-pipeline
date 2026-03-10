@@ -3,6 +3,7 @@ import numpy as np
 import sqlite3
 import time
 import os
+import logging
 from defs import ViewGraph, ImagePair, Cameras, Images, CameraModelId, ConfigurationType
 
 
@@ -254,14 +255,17 @@ def ReadColmapDatabase(path):
 
     for group in matches_and_geometries:
         pair_id, data, data2, config, F_blob, E_blob, H_blob = group
+        image_id1, image_id2 = PairId2IdsInversed(pair_id)
+        name1 = images_dict[image_id1]['filename']
+        name2 = images_dict[image_id2]['filename']        
         if data2 is None:
-            invalid_count += 1
+            # invalid_count += 1
+            # print(f"Warning: pair {name1} - {name2}: No two-view geometry found, skipping this pair.")
             continue
 
         # ======================================================================
         init_match = blob_to_array(data, np.uint32, (-1, 2))
         verified_match = blob_to_array(data2, np.uint32, (-1, 2))
-        image_id1, image_id2 = PairId2IdsInversed(pair_id)
         pair_key = (image_id1, image_id2)
         image_pairs[pair_key] = ImagePair(image_id1=image_id1, image_id2=image_id2)
         keypoints1 = images_dict[image_id1]['features']
@@ -271,6 +275,9 @@ def ReadColmapDatabase(path):
         valid_indices = (idx1 != -1) & (idx2 != -1) & (idx1 < len(keypoints1)) & (idx2 < len(keypoints2))
         valid_matches = verified_match[valid_indices]
         image_pairs[pair_key].matches = valid_matches
+        if len(valid_matches) / len(init_match) < 0.5:
+            print(f"Warning: pair {name1} - {name2}: Only {len(valid_matches)} valid matches found out of {len(init_match)} initial matches.")
+        # print(f"Pair {name1} - {name2}: {len(init_match)} initial matches, {len(verified_match)} verified, {len(valid_matches)} valid matches found.")
         # =========================================================================
 
         # data = blob_to_array(data, np.uint32, (-1, 2))
@@ -369,3 +376,143 @@ def ReadColmapDatabase(path):
         feature_name = 'colmap'
 
     return view_graph, cameras, images, feature_name
+
+
+def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_ratio=0.1, logger=None):
+    """
+    根据内点数量和内点比例阈值过滤数据库中的匹配对，删除不满足条件的匹配
+    
+    仿照 ReadColmapDatabase 函数的结构，该函数：
+    1. 连接 COLMAP 数据库
+    2. 遍历所有匹配对
+    3. 检查每对的验证匹配数量和内点比例
+    4. 删除不满足阈值条件的匹配对 (both from matches and two_view_geometries tables)
+    
+    Args:
+        database_path (str): COLMAP 数据库文件路径
+        min_num_inliers (int): 最少内点数量阈值，默认30
+        min_inlier_ratio (float): 最少内点比例阈值，范围0.0-1.0，默认0.1
+        logger (logging.Logger): 可选的日志记录器，如果为None则使用默认logger
+    
+    Returns:
+        int: 删除的匹配对数量
+        
+    Example:
+        >>> import logging
+        >>> logger = logging.getLogger()
+        >>> removed = filter_matches_by_inliers('database.db', min_num_inliers=40, min_inlier_ratio=0.15, logger=logger)
+        >>> print(f"Removed {removed} match pairs")
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    start_time = time.time()
+    logger.info(f"Filtering database: {database_path}")
+    logger.info(f"Thresholds: min_num_inliers={min_num_inliers}, min_inlier_ratio={min_inlier_ratio}")
+    
+    try:
+        db = COLMAPDatabase.connect(database_path)
+    except Exception as e:
+        logger.error(f"Failed to connect to database: {e}")
+        return 0
+    
+    # 读取所有图像信息用于显示文件名
+    images_dict = {}
+    for id, filename, cam_id in db.execute("SELECT image_id, name, camera_id FROM images"):
+        images_dict[id] = {
+            'id': id,
+            'filename': filename,
+            'cam_id': cam_id
+        }
+    
+    # 从两视图几何表中读取所有匹配对信息
+    # 注意：这里JOIN确保只读取有几何验证的匹配对
+    query = """
+    SELECT m.pair_id, m.data, t.data
+    FROM matches AS m
+    INNER JOIN two_view_geometries AS t ON m.pair_id = t.pair_id
+    """
+    matches_and_geometries = list(db.execute(query))
+    logger.info(f"Found {len(matches_and_geometries)} image pairs in database")
+    
+    removed_count = 0
+    kept_count = 0
+    problematic_pairs = []  # 用于记录被删除的对信息
+    
+    for pair_id, init_match_data, verified_match_data in matches_and_geometries:
+        # 解析图像ID
+        image_id1, image_id2 = PairId2IdsInversed(pair_id)
+        name1 = images_dict[image_id1]['filename']
+        name2 = images_dict[image_id2]['filename']
+        
+        if verified_match_data is None:
+            # 没有验证的几何数据，保留但记录警告
+            logger.warning(f"Pair {name1} - {name2}: No verified geometry data found, keeping it")
+            kept_count += 1
+            continue
+        
+        try:
+            # 解析匹配数据
+            init_match = blob_to_array(init_match_data, np.uint32, (-1, 2)) if init_match_data is not None else np.array([])
+            verified_match = blob_to_array(verified_match_data, np.uint32, (-1, 2))
+            
+            num_init = len(init_match)
+            num_verified = len(verified_match)
+            
+            # 计算内点比例
+            inlier_ratio = num_verified / num_init if num_init > 0 else 0.0
+            
+            # 检查是否满足阈值条件
+            should_remove = False
+            reason = []
+            
+            if num_verified < min_num_inliers:
+                should_remove = True
+                reason.append(f"inliers={num_verified}<{min_num_inliers}")
+            
+            if inlier_ratio < min_inlier_ratio:
+                should_remove = True
+                reason.append(f"ratio={inlier_ratio:.4f}<{min_inlier_ratio}")
+            
+            if should_remove:
+                # 删除这对匹配
+                db.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
+                db.execute("DELETE FROM two_view_geometries WHERE pair_id = ?", (pair_id,))
+                removed_count += 1
+                
+                reason_str = ", ".join(reason)
+                logger.debug(f"Removed pair {name1} - {name2}: {reason_str} "
+                           f"(init={num_init}, verified={num_verified})")
+                problematic_pairs.append({
+                    'pair': f"{name1} - {name2}",
+                    'init_matches': num_init,
+                    'verified_matches': num_verified,
+                    'inlier_ratio': inlier_ratio,
+                    'reason': reason_str
+                })
+            else:
+                kept_count += 1
+                
+        except Exception as e:
+            logger.error(f"Error processing pair {name1} - {name2}: {e}")
+    
+    # 提交更改
+    db.commit()
+    db.close()
+    
+    elapsed_time = time.time() - start_time
+    logger.info(f"Database filtering completed in {elapsed_time:.2f}s")
+    logger.info(f"Summary: Removed {removed_count} pairs, Kept {kept_count} pairs")
+    
+    if removed_count > 0:
+        logger.info("Top problematic pairs removed:")
+        for i, pair_info in enumerate(problematic_pairs[:10]):  # 显示前10个
+            logger.info(f"  {i+1}. {pair_info['pair']}: "
+                       f"init={pair_info['init_matches']}, "
+                       f"verified={pair_info['verified_matches']}, "
+                       f"ratio={pair_info['inlier_ratio']:.4f} "
+                       f"({pair_info['reason']})")
+        if len(problematic_pairs) > 10:
+            logger.info(f"  ... and {len(problematic_pairs)-10} more pairs")
+    
+    return removed_count

@@ -21,7 +21,7 @@ parser.add_argument("--skip_matching", action='store_true')
 parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=str)
 parser.add_argument("--output_path", "-o", default="output_splg", type=str)
 parser.add_argument("--camera", default="RADIAL", type=str)
-parser.add_argument("--default_focal_length_factor", default=0.9, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
+parser.add_argument("--default_focal_length_factor", default=1.0, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
@@ -30,7 +30,7 @@ parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree"], help="Matching strategy to use")
-parser.add_argument("--match_type", "-mt", type=str, default="LIGHTGLUE", choices=["UNDEFINED", "BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_type", "-mt", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--alg", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
 parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
@@ -48,21 +48,7 @@ parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Wh
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
 args = parser.parse_args()
 
-
-# =====================key parameter =====================================================
-min_num_inliers = args.min_num_inliers
-min_inlier_ratio = args.min_inlier_ratio
-
-feature_match_type = args.match_type
-if feature_match_type != "UNDEFINED":
-    if args.feature_type == "SIFT":
-        feature_match_type = "SIFT" + "_" + feature_match_type
-    else:
-        feature_match_type = "ALIKED" + "_" + feature_match_type
-
-# --------------------------
-# Helper functions
-# --------------------------
+# ========================== Helper functions =========================
 def resource_path() -> str:
     """Get absolute path for packaged or development scripts."""
     try:
@@ -71,27 +57,7 @@ def resource_path() -> str:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return base_path
 
-# --------------------------
-# Paths and executables
-# --------------------------
-current_path = resource_path()
-os_type = check_operating_system()
-print(f"Detected operating system: {os_type}")
-if os_type == 'Windows':
-    # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/bin/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
-    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-3.13.0\\bin\\colmap.exe"
-    glomap_path = os.path.join(current_path, "glomap-x64-windows-cuda-1.2.0\\bin\\glomap.exe")
-    vocab_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/vocab/vocab_tree_faiss_flickr100K_words32K.bin")
-else:
-    colmap_path = "colmap"
-    glomap_path = "glomap"
-    vocab_path = os.path.join(current_path, "vocab/vocab_tree_faiss_flickr100K_words32K.bin")
-colmap_command = args.colmap_executable if args.colmap_executable else colmap_path
-glomap_command = args.glomap_executable if args.glomap_executable else glomap_path
-
-use_gpu = 0 if args.no_gpu else 1
-
+# ============================== output path ============================
 if args.output_path == "":
     output_path = args.source_path
 else:
@@ -100,20 +66,8 @@ else:
         output_path = os.path.join(args.source_path, output_path)
 os.makedirs(output_path, exist_ok=True)
 
-if args.clean:
-    print(f"Cleaning output directory: {output_path}")
-    try:
-        shutil.rmtree(os.path.join(output_path, "distorted"), ignore_errors=True)
-        shutil.rmtree(os.path.join(output_path, "sparse"), ignore_errors=True)
-        shutil.rmtree(os.path.join(output_path, "dense"), ignore_errors=True)
-        shutil.rmtree(os.path.join(output_path, "stereo"), ignore_errors=True)
-        print("Output directory cleaned successfully.")
-    except Exception as e:
-        print(f"Failed to clean output directory: {e}")
 
-# --------------------------
-# Logging setup
-# --------------------------
+# ============================ Logging setup ===============================
 log_level = args.log_level
 log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
 
@@ -136,18 +90,80 @@ fh.setFormatter(log_formatter)
 logger.addHandler(fh)
 
 
-# --------------------------
-# Timing variables
-# --------------------------
+# ============================ Timeing variables ===============================
 start_time = time.time()
 feature_extraction_time = 0
 feature_matching_time = 0
 splg_time = 0
 mapper_time = 0
 
-# --------------------------
-# SuperPoint + LightGlue Functions
-# --------------------------
+# =====================key parameter =====================================================
+min_num_inliers = args.min_num_inliers
+min_inlier_ratio = args.min_inlier_ratio
+
+feature_match_type = args.match_type
+if feature_match_type != "UNDEFINED":
+    if args.feature_type == "SIFT":
+        feature_match_type = "SIFT" + "_" + feature_match_type
+    else:
+        feature_match_type = "ALIKED" + "_" + feature_match_type
+
+
+
+# ===================== Paths and executables ============================================
+os_type = check_operating_system()
+current_path = resource_path()
+print(f"Detected operating system: {os_type}")
+if os_type == 'Windows':
+    # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/bin/colmap.exe")
+    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-3.13.0\\bin\\colmap.exe"
+    glomap_path = os.path.join(current_path, "glomap-x64-windows-cuda-1.2.0\\bin\\glomap.exe")
+else:
+    colmap_path = "colmap"
+    glomap_path = "glomap"
+
+colmap_command = args.colmap_executable if args.colmap_executable else colmap_path
+glomap_command = args.glomap_executable if args.glomap_executable else glomap_path
+
+bruteforce_match_path = os.path.join(current_path, "checkpoints/colmap_dep/bruteforce_matcher.onnx")
+sift_lightglue_match_path = os.path.join(current_path, "checkpoints/colmap_dep/sift-lightglue.onnx")
+aliked_lightglue_match_path = os.path.join(current_path, "checkpoints/colmap_dep/aliked-lightglue.onnx")
+aliked_n16rot_path = os.path.join(current_path, "checkpoints/colmap_dep/aliked-n16rot.onnx")
+aliked_n32_path = os.path.join(current_path, "checkpoints/colmap_dep/aliked-n32.onnx")
+vocab_sift_path = os.path.join(current_path, "checkpoints/colmap_dep/vocab_tree_faiss_flickr100K_words256K.bin")
+vocab_aliked_n16rot_path = os.path.join(current_path, "checkpoints/colmap_dep/vocab_tree_faiss_flickr100K_words64K_aliked_n16rot.bin")
+vocab_aliked_n32_path = os.path.join(current_path, "checkpoints/colmap_dep/vocab_tree_faiss_flickr100K_words64K_aliked_n32.bin")
+
+
+if args.feature_type == "SIFT":
+    vocab_path = vocab_sift_path
+elif args.feature_type == "ALIKED_N16ROT":
+    vocab_path = vocab_aliked_n16rot_path
+elif args.feature_type == "ALIKED_N32":
+    vocab_path = vocab_aliked_n32_path
+else:
+    vocab_path = ""
+
+
+
+# ========================== clean output directory ==========================
+if args.clean:
+    print(f"Cleaning output directory: {output_path}")
+    try:
+        shutil.rmtree(os.path.join(output_path, "distorted"), ignore_errors=True)
+        shutil.rmtree(os.path.join(output_path, "sparse"), ignore_errors=True)
+        shutil.rmtree(os.path.join(output_path, "dense"), ignore_errors=True)
+        shutil.rmtree(os.path.join(output_path, "stereo"), ignore_errors=True)
+        print("Output directory cleaned successfully.")
+    except Exception as e:
+        print(f"Failed to clean output directory: {e}")
+
+
+# ======================== GPU setup ==========================================
+use_gpu = 0 if args.no_gpu else 1
+
+# ==============================================================================
 
 def initialize_colmap_database(
     database_path: str,
@@ -529,8 +545,8 @@ feat_extraction_cmd = [
     "--SiftExtraction.dsp_num_scales", "10",
     "--AlikedExtraction.max_num_features", "2048",
     "--AlikedExtraction.min_score", "0.2",
-    # "--AlikedExtraction.n16rot_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-n16rot.onnx;aliked-n16rot.onnx;39c423d0a6f03d39ec89d3d1d61853765c2fb6a8b8381376c703e5758778a547",
-    # "--AlikedExtraction.n32_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-n32.onnx;aliked-n32.onnx;a077728a02d2de1a775c66df6de8cfeb7c6b51ca57572c64c680131c988c8b3c",
+    "--AlikedExtraction.n16rot_model_path", aliked_n16rot_path,
+    "--AlikedExtraction.n32_model_path", aliked_n32_path
 
 ]
 logger.info("Starting feature extraction with COLMAP SIFT...")
@@ -562,13 +578,13 @@ if args.match_strategy == "exhaustive":
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
-        # "--SiftMatching.lightglue_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/sift-lightglue.onnx;sift-lightglue.onnx;e0500228472b43f92b3d36881a09b3310d3b058b56187b246cc7b9ab6429096e",
+        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
         "--AlikedMatching.brute_force_min_cossim", "0.85",
         "--AlikedMatching.brute_force_max_ratio", "1",
         "--AlikedMatching.brute_force_cross_check", "1",
-        # "--AlikedMatching.bruteforce_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/bruteforce-matcher.onnx;bruteforce-matcher.onnx;3c1282f96d83f5ffc861a873298d08bbe5219f59af59223f5ceab5c41a182a47"
+        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
         "--AlikedMatching.lightglue_min_score", "0.1",
-        # "--AlikedMatching.lightglue_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-lightglue.onnx;aliked-lightglue.onnx;b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d",
+        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
         "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
         "--TwoViewGeometry.multiple_models", "0",
         "--TwoViewGeometry.compute_relative_pose", "0",
@@ -625,13 +641,13 @@ elif args.match_strategy == "sequential":
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
-        # "--SiftMatching.lightglue_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/sift-lightglue.onnx;sift-lightglue.onnx;e0500228472b43f92b3d36881a09b3310d3b058b56187b246cc7b9ab6429096e",
+        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
         "--AlikedMatching.brute_force_min_cossim", "0.85",
         "--AlikedMatching.brute_force_max_ratio", "1",
         "--AlikedMatching.brute_force_cross_check", "1",
-        # "--AlikedMatching.bruteforce_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/bruteforce-matcher.onnx;bruteforce-matcher.onnx;3c1282f96d83f5ffc861a873298d08bbe5219f59af59223f5ceab5c41a182a47",
+        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
         "--AlikedMatching.lightglue_min_score", "0.1",
-        # "--AlikedMatching.lightglue_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-lightglue.onnx;aliked-lightglue.onnx;b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d",
+        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
         "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
         "--TwoViewGeometry.multiple_models", "0",
         "--TwoViewGeometry.compute_relative_pose", "0",
@@ -665,13 +681,13 @@ elif args.match_strategy == "vocab_tree":
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
-        # "--SiftMatching.lightglue_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/sift-lightglue.onnx;sift-lightglue.onnx;e0500228472b43f92b3d36881a09b3310d3b058b56187b246cc7b9ab6429096e",
+        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
         "--AlikedMatching.brute_force_min_cossim", "0.85",
         "--AlikedMatching.brute_force_max_ratio", "1",
         "--AlikedMatching.brute_force_cross_check", "1",
-        # "--AlikedMatching.bruteforce_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/bruteforce-matcher.onnx;bruteforce-matcher.onnx;3c1282f96d83f5ffc861a873298d08bbe5219f59af59223f5ceab5c41a182a47",
+        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
         "--AlikedMatching.lightglue_min_score", "0.1",
-        # "--AlikedMatching.lightglue_model_path", "https://github.com/colmap/colmap/releases/download/3.13.0/aliked-lightglue.onnx;aliked-lightglue.onnx;b9a5de7204648b18a8cf5dcac819f9d30de1a5961ef03756803c8b86c2dceb8d",
+        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
         "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
         "--TwoViewGeometry.multiple_models", "0",
         "--TwoViewGeometry.compute_relative_pose", "0",
@@ -681,7 +697,7 @@ elif args.match_strategy == "vocab_tree":
         "--TwoViewGeometry.filter_stationary_matches", "0",
         "--TwoViewGeometry.stationary_matches_max_error", "4",
         "--TwoViewGeometry.max_error", "4",
-        "--TwoViewGeometry.confidence", "0.999",
+        "--TwoViewGeometry.confidence", "0.9999",
         "--TwoViewGeometry.max_num_trials", "10000",
         "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
         "--TwoViewGeometry.random_seed", "-1",
@@ -690,7 +706,7 @@ elif args.match_strategy == "vocab_tree":
         "--VocabTreeMatching.num_checks", "32",
         "--VocabTreeMatching.num_images_after_verification", "0", # 0
         "--VocabTreeMatching.max_num_features", "-1",
-        # "--VocabTreeMatching.vocab_tree_path", vocab_path,
+        "--VocabTreeMatching.vocab_tree_path", vocab_path,
         # "--VocabTreeMatching.match_list_path", match_list_path,
         "--VocabTreeMatching.num_threads", "-1"
     ]
@@ -737,8 +753,8 @@ if args.alg == "acc":
         "--image_path", images_path,
         "--output_path", distorted_sparse_path,
         "--Mapper.num_threads", "-1",
-        "--Mapper.min_num_matches", "30", # 15
-        "--Mapper.init_num_trials", "500", # 200
+        "--Mapper.min_num_matches", "15", # 15
+        "--Mapper.init_num_trials", "1000", # 200
         "--Mapper.init_min_num_inliers", "200", # 100
         "--Mapper.init_max_error", "4", # 4
         "--Mapper.init_min_tri_angle", "16", # 16
@@ -747,8 +763,8 @@ if args.alg == "acc":
         "--Mapper.ba_local_max_num_iterations", "12", # 25
         "--Mapper.ba_local_max_refinements", "2", # 2
         "--Mapper.ba_local_max_refinement_change", "0.001", # 0.001
-        "--Mapper.ba_global_frames_ratio", "2.0", # 1.1
-        "--Mapper.ba_global_points_ratio", "2.0", # 1.1
+        "--Mapper.ba_global_frames_ratio", "1.5", # 1.1
+        "--Mapper.ba_global_points_ratio", "1.5", # 1.1
         "--Mapper.ba_global_frames_freq", "5000", # 5000
         "--Mapper.ba_global_points_freq", "250000", # 250000
         "--Mapper.ba_global_max_num_iterations", "20", # 50 --> 20 --> 25

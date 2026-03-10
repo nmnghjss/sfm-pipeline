@@ -14,27 +14,42 @@ class PoseError:
         ate_error_mean=0.0,
         ate_error_median=0.0,
         ate_error_std=0.0,
+        ate_error_max=0.0,
         ate_error_p90=0.0,
         rotate_angle_error_rmse=0,
         rotate_angle_error_mean=0.0,
         rotate_angle_error_median=0.0,
         rotate_angle_error_std=0.0,
+        rotate_angle_error_max=0.0,
         rotate_angle_error_p90=0.0,
-        registered_diff=0
+        registered_diff=0,
+        registered_ratio_diff=0.0,
+        base_registered_num=0,
+        update_registered_num=0,
+        base_registered_ratio=0.0,
+        update_registered_ratio=0.0,
     ):
         self.ate_error_rmse = ate_error_rmse
         self.ate_error_mean = ate_error_mean
         self.ate_error_median = ate_error_median
         self.ate_error_std = ate_error_std
+        self.ate_error_max = ate_error_max
         self.ate_error_p90 = ate_error_p90
         
         self.rotate_angle_error_rmse = rotate_angle_error_rmse
         self.rotate_angle_error_mean = rotate_angle_error_mean
         self.rotate_angle_error_median = rotate_angle_error_median
         self.rotate_angle_error_std = rotate_angle_error_std
+        self.rotate_angle_error_max = rotate_angle_error_max
         self.rotate_angle_error_p90 = rotate_angle_error_p90
 
         self.registered_diff = registered_diff
+        self.registered_ratio_diff = registered_ratio_diff
+
+        self.base_registered_num = base_registered_num
+        self.update_registered_num = update_registered_num
+        self.base_registered_ratio = base_registered_ratio
+        self.update_registered_ratio = update_registered_ratio
 
 
 
@@ -226,27 +241,31 @@ def compute_alignment_error(base_images_pose:dict, update_images_pose:dict, visu
         ate_error_std = np.std(errors_ate)
         ate_error_rmse = np.sqrt(np.mean(np.array(errors_ate) ** 2))
         ate_error_median = np.median(errors_ate)
+        ate_error_max = np.max(errors_ate)  
         ate_error_p90 = np.percentile(errors_ate, 90)
         angle_error_mean = np.mean(rotate_angle_errors)
         angle_error_std = np.std(rotate_angle_errors)
         angle_error_median = np.median(rotate_angle_errors)
+        angle_error_max = np.max(rotate_angle_errors)
         angle_error_rmse = np.sqrt(np.mean(np.array(rotate_angle_errors) ** 2))
         angle_error_p90 = np.percentile(rotate_angle_errors, 90)
 
-        print(f"相机中心位置误差统计信息: 均值={ate_error_mean:.3f} 米, 标准差={ate_error_std:.3f} 米, rmse = {ate_error_rmse:.3f} 米, 90%分位数 = {ate_error_p90:.3f} 米")
-        print(f"相机旋转误差统计信息: 均值={angle_error_mean:.3f} 度, 标准差={angle_error_std:.3f} 度, rmse = {angle_error_rmse:.3f} 度, median = {angle_error_median:.3f} 度， 90%分位数 = {angle_error_p90}")
+        print(f"相机中心位置误差统计信息: 均值={ate_error_mean:.3f} 米, 标准差={ate_error_std:.3f} 米, rmse = {ate_error_rmse:.3f} 米, 90%分位数 = {ate_error_p90:.3f} 米，最大误差 = {ate_error_max:.3f} 米")
+        print(f"相机旋转误差统计信息: 均值={angle_error_mean:.3f} 度, 标准差={angle_error_std:.3f} 度, rmse = {angle_error_rmse:.3f} 度, median = {angle_error_median:.3f} 度， 90%分位数 = {angle_error_p90}, 最大误差 = {angle_error_max}")
         
         pose_error = PoseError()
         pose_error.ate_error_mean = ate_error_mean
         pose_error.ate_error_std = ate_error_std
         pose_error.ate_error_rmse = ate_error_rmse
         pose_error.ate_error_median = ate_error_median
+        pose_error.ate_error_max = ate_error_max
         pose_error.ate_error_p90 = ate_error_p90
 
         pose_error.rotate_angle_error_mean = angle_error_mean
         pose_error.rotate_angle_error_std = angle_error_std
         pose_error.rotate_angle_error_rmse = angle_error_rmse
         pose_error.rotate_angle_error_median = angle_error_median
+        pose_error.rotate_angle_error_max = angle_error_max
         pose_error.rotate_angle_error_p90 = angle_error_p90
 
         if visualize:

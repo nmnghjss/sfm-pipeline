@@ -411,16 +411,13 @@ if __name__ == '__main__':
     parser.add_argument("--pipeline", nargs="+", type=str, default=["sfm"])
     # parser.add_argument("--skyball", action='store_true', default=False, help='添加天空球到点云')
     # parser.add_argument("--skyball_points", type=int, default=10000, help='天空球点数')
-    
-    # 添加单独执行各阶段的参数
-    # parser.add_argument("--densify", action='store_true', default=False, help='仅执行点云密化阶段')
-    # parser.add_argument("--get_depths", action='store_true', default=False, help='仅执行深度图生成阶段')
-    # parser.add_argument("--correct_depths", action='store_true', default=False, help='仅执行深度图校正阶段')
-    parser.add_argument("--train_3dgs", action='store_true', default=False, help='仅执行3D高斯训练阶段')
+
+    parser.add_argument("--sift_match_strategy", "-sms", type=str, default="acc", choices=["default", "acc", "sequential", "vocab_tree"], help="Matching strategy for SIFT features")
+    parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 
     parser.add_argument("--dataset_root", "-ds", type=str, default="dataset", help='数据集根目录')
-    parser.add_argument("--output_name", "-o", type=str, default="output-colmap-sift4096-match_guided-acc", help='3DGS模型输出目录')
-    parser.add_argument("--metrics_file_name", "-mf", type=str, default="metric_sfm_sift4096-match_guided_acc.csv", help='保存所有数据集时间和指标的csv文件名')
+    parser.add_argument("--output_name", "-o", type=str, default="output-colmap314-aliked-16rot-vocab_tree-match=0309", help='3DGS模型输出目录')
+    parser.add_argument("--metrics_file_name", "-mf", type=str, default="metric_colmap314-aliked-16rot-vocab_tree-match_acc-check0309-4.csv", help='保存所有数据集时间和指标的csv文件名')
 
     args = parser.parse_args()
     # args.save_iterations.append(args.iterations)
@@ -461,12 +458,14 @@ if __name__ == '__main__':
         # ==========================Colmap-SFM===============================================================================
         sfm_start = time.time()
         if "sfm" in args.pipeline:
-            # sfm_pipeline_exe = os.path.join(current_path, "run-sfm-20251231-v3/run-sfm.exe") 
-            # sfm_pipeline_exe = "python sfm-v6.py --alg acc --max_feature_num 8192  -sms acc "
-            sfm_pipeline_exe = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms sequential "
-            # sfm_pipeline_exe = "python sfm-v6.py --alg acc --max_feature_num 2048 -splg "
+            sfm_pipeline_exe = os.path.join(current_path, "run-sfm-20260306-v7/run-sfm.exe") 
+            sfm_command = "python sfm-colmap-3.14.0.py --alg acc "
+            # sfm_command = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms acc "
+            # sfm_command = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms sequential "
+            # sfm_command = "python sfm-v6.py --alg acc --max_feature_num 2048 -splg "
+            # sfm_command = sfm_pipeline_exe + " --alg acc -sms " + args.sift_match_strategy + " -so " + str(args.sequential_overlap) + " "
             sfm_output_dir = project_dir
-            sfm_with_colmap(sfm_pipeline_exe, data_path, sfm_output_dir)   
+            sfm_with_colmap(sfm_command, data_path, sfm_output_dir)   
 
         sfm_used = time.time() - sfm_start
         print("Sfm used: {:.2f}s".format(sfm_used))
