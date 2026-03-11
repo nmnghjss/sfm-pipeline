@@ -1386,7 +1386,7 @@ if args.alg == "acc":
         "--output_path", distorted_sparse_path,
         "--Mapper.num_threads", "-1",
         "--Mapper.min_num_matches", "25", # 15
-        "--Mapper.init_num_trials", "200", # 200
+        "--Mapper.init_num_trials", "1000", # 200
         "--Mapper.init_min_num_inliers", "100", # 100
         "--Mapper.init_max_error", "4", # 4
         "--Mapper.init_min_tri_angle", "16", # 16
