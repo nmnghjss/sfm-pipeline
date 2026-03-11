@@ -32,7 +32,7 @@ parser.add_argument("--single_camera", "-sc",default="1", type=str)
 parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--alg", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
-parser.add_argument("--feature_type", "-ft", default="aliked", type=str, choices=["superpoint", "aliked"], help="Feature type to use: superpoint or aliked")
+parser.add_argument("--feature_type", "-ft", default="superpoint", type=str, choices=["superpoint", "aliked"], help="Feature type to use: superpoint or aliked")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--SuperpointLightglue", "-splg", action="store_true", help="Use SuperPoint features instead of SIFT")
 parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", 
@@ -40,7 +40,7 @@ parser.add_argument("--match_strategy", "-ms", type=str, default="threshold",
                     help="Matching strategy: exhaustive (all pairs), nearest_k (top-k similar), quick (fast heuristic), threshold (similarity threshold based)")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
-parser.add_argument("--min_matches_per_image", "-mni", type=int, default=20,
+parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
