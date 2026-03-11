@@ -330,6 +330,64 @@ def write_keypoints_to_database(db, image_id: int, keypoints: np.ndarray, descri
         logger.warning(f"Failed to write features to database for image {image_id}: {e}")
 
 
+def batch_write_keypoints_to_database(db, keypoints_list: list, logger=None):
+    """
+    Batch write multiple images' keypoints and descriptors to COLMAP database in a single transaction.
+    This is much faster than writing keypoints one by one.
+    
+    Args:
+        db: COLMAPDatabase connection
+        keypoints_list: List of tuples (image_id, keypoints_array, descriptors_array)
+        logger: Optional logger instance
+    
+    Returns:
+        Number of successfully written images
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    if not keypoints_list:
+        return 0
+    
+    try:
+        cursor = db.cursor()
+        
+        # Pre-process all keypoints: ensure correct data types
+        processed_keypoints = []
+        for image_id, keypoints, descriptors in keypoints_list:
+            keypoints = np.asarray(keypoints, np.float32)
+            descriptors = np.asarray(descriptors, np.uint8)  # COLMAP expects uint8
+            processed_keypoints.append((image_id, keypoints, descriptors))
+        
+        # Begin transaction
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # Delete existing features for all images (batch delete)
+        for image_id, _, _ in processed_keypoints:
+            cursor.execute("DELETE FROM keypoints WHERE image_id = ?", (image_id,))
+            cursor.execute("DELETE FROM descriptors WHERE image_id = ?", (image_id,))
+        
+        # Add all new keypoints and descriptors (use database methods which handle encoding)
+        for image_id, keypoints, descriptors in processed_keypoints:
+            db.add_keypoints(image_id, keypoints)
+            db.add_descriptors(image_id, descriptors)
+        
+        # Commit once for all operations
+        cursor.execute("COMMIT")
+        db.commit()
+        
+        logger.info(f"Batch wrote {len(processed_keypoints)} images' keypoints and descriptors to database")
+        return len(processed_keypoints)
+        
+    except Exception as e:
+        logger.error(f"Failed to batch write keypoints to database: {e}")
+        try:
+            db.commit()  # Rollback
+        except:
+            pass
+        return 0
+
+
 def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.ndarray, logger=None):
     """
     Write LightGlue matches to COLMAP database.
@@ -368,6 +426,67 @@ def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.nd
         
     except Exception as e:
         logger.warning(f"Failed to write matches to database for image pair ({image_id0}, {image_id1}): {e}")
+
+
+def batch_write_matches_to_database(db, matches_list: list, logger=None):
+    """
+    Batch write multiple match pairs to COLMAP database in a single transaction.
+    This is much faster than writing matches one by one.
+    
+    Args:
+        db: COLMAPDatabase connection
+        matches_list: List of tuples (image_id0, image_id1, matches_array)
+        logger: Optional logger instance
+    
+    Returns:
+        Number of successfully written match pairs
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    if not matches_list:
+        return 0
+    
+    try:
+        cursor = db.cursor()
+        MAX_IMAGE_ID = 2**31 - 1
+        
+        # Pre-process all matches: ensure correct image_id ordering and data type
+        processed_matches = []
+        for image_id0, image_id1, matches in matches_list:
+            if image_id0 > image_id1:
+                image_id0, image_id1 = image_id1, image_id0
+                matches = matches[:, [1, 0]]  # Swap match indices accordingly
+            
+            matches = np.asarray(matches, np.uint32)
+            processed_matches.append((image_id0, image_id1, matches))
+        
+        # Begin transaction
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # Delete existing matches for all pairs (batch delete)
+        for image_id0, image_id1, _ in processed_matches:
+            pair_id = image_id0 * MAX_IMAGE_ID + image_id1
+            cursor.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
+        
+        # Add all new matches (use database method which handles pair_id encoding)
+        for image_id0, image_id1, matches in processed_matches:
+            db.add_matches(image_id0, image_id1, matches)
+        
+        # Commit once for all operations
+        cursor.execute("COMMIT")
+        db.commit()
+        
+        logger.info(f"Batch wrote {len(processed_matches)} match pairs to database")
+        return len(processed_matches)
+        
+    except Exception as e:
+        logger.error(f"Failed to batch write matches to database: {e}")
+        try:
+            db.commit()  # Rollback
+        except:
+            pass
+        return 0
 
 
 def find_similar_images_parallel(image_features, max_num=30, min_num=20, threshold=None, logger=None):
@@ -710,10 +829,12 @@ def extract_features_with_superpoint(
             image_features[img_file] = None
             continue
     
-    # Batch write all keypoints and descriptors to database
-    logger.info(f"Writing {len(keypoints_to_write)} images' keypoints to database...")
-    for image_id, keypoints, descriptors in keypoints_to_write:
-        write_keypoints_to_database(db, image_id, keypoints, descriptors, logger)
+    # Batch write all keypoints and descriptors to database (optimized - single transaction)
+    logger.info(f"Writing {len(keypoints_to_write)} images' keypoints to database in batch mode...")
+    write_start = time.time()
+    written_images = batch_write_keypoints_to_database(db, keypoints_to_write, logger)
+    write_time = time.time() - write_start
+    logger.info(f"Batch keypoints write completed in {write_time:.2f}s ({written_images} images written)")
     
     # Log extraction results
     # for idx, img_file, num_kpts, image_id in extraction_log:
@@ -959,10 +1080,12 @@ def match_features_with_lightglue(
             logger.warning(f"Failed to match {img_name0} and {img_name1}: {e}")
             continue
     
-    # Batch write all matches to database
-    logger.info(f"Writing {total_match_pairs} match pairs to database...")
-    for image_id0, image_id1, matches in matches_to_write:
-        write_matches_to_database(db, image_id0, image_id1, matches, logger)
+    # Batch write all matches to database (optimized - single transaction)
+    logger.info(f"Writing {total_match_pairs} match pairs to database in batch mode...")
+    write_start = time.time()
+    written_pairs = batch_write_matches_to_database(db, matches_to_write, logger)
+    write_time = time.time() - write_start
+    logger.info(f"Batch write completed in {write_time:.2f}s ({written_pairs} pairs written)")
     
     # Batch write match list to file if path provided
     if match_list_path:

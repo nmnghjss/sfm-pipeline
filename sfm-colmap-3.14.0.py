@@ -1,4 +1,3 @@
-
 import os
 import sys
 import logging
@@ -11,6 +10,7 @@ import numpy as np
 import cv2
 from database import COLMAPDatabase, ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
+import ctypes
 
 # --------------------------
 # Argument parser
@@ -32,7 +32,7 @@ parser.add_argument("--feature_type", type=str, default="ALIKED_N16ROT", choices
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree"], help="Matching strategy to use")
 parser.add_argument("--match_type", "-mt", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--alg", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
-parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
@@ -162,6 +162,33 @@ if args.clean:
 
 # ======================== GPU setup ==========================================
 use_gpu = 0 if args.no_gpu else 1
+
+# ==============================================================================
+# Helper function to convert Chinese paths to short paths on Windows
+def get_short_path_name(long_path):
+    """
+    Convert a long path to its short (8.3) path format on Windows.
+    This helps handle paths with non-ASCII characters (like Chinese).
+    
+    Args:
+        long_path: The long path to convert
+        
+    Returns:
+        Short path if on Windows, original path otherwise
+    """
+    if sys.platform != 'win32':
+        return long_path
+    
+    try:
+        buffer = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.kernel32.GetShortPathNameW(long_path, buffer, len(buffer)):
+            short_path = buffer.value
+            logger.debug(f"Converted path: {long_path} -> {short_path}")
+            return short_path
+    except Exception as e:
+        logger.warning(f"Failed to convert path to short format: {e}")
+    
+    return long_path  # Fallback to the original path if conversion fails
 
 # ==============================================================================
 
@@ -355,6 +382,64 @@ def write_keypoints_to_database(db, image_id: int, keypoints: np.ndarray, descri
         logger.warning(f"Failed to write features to database for image {image_id}: {e}")
 
 
+def batch_write_keypoints_to_database(db, keypoints_list: list, logger=None):
+    """
+    Batch write multiple images' keypoints and descriptors to COLMAP database in a single transaction.
+    This is much faster than writing keypoints one by one.
+    
+    Args:
+        db: COLMAPDatabase connection
+        keypoints_list: List of tuples (image_id, keypoints_array, descriptors_array)
+        logger: Optional logger instance
+    
+    Returns:
+        Number of successfully written images
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    if not keypoints_list:
+        return 0
+    
+    try:
+        cursor = db.cursor()
+        
+        # Pre-process all keypoints: ensure correct data types
+        processed_keypoints = []
+        for image_id, keypoints, descriptors in keypoints_list:
+            keypoints = np.asarray(keypoints, np.float32)
+            descriptors = np.asarray(descriptors, np.uint8)  # COLMAP expects uint8
+            processed_keypoints.append((image_id, keypoints, descriptors))
+        
+        # Begin transaction
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # Delete existing features for all images (batch delete)
+        for image_id, _, _ in processed_keypoints:
+            cursor.execute("DELETE FROM keypoints WHERE image_id = ?", (image_id,))
+            cursor.execute("DELETE FROM descriptors WHERE image_id = ?", (image_id,))
+        
+        # Add all new keypoints and descriptors (use database methods which handle encoding)
+        for image_id, keypoints, descriptors in processed_keypoints:
+            db.add_keypoints(image_id, keypoints)
+            db.add_descriptors(image_id, descriptors)
+        
+        # Commit once for all operations
+        cursor.execute("COMMIT")
+        db.commit()
+        
+        logger.info(f"Batch wrote {len(processed_keypoints)} images' keypoints and descriptors to database")
+        return len(processed_keypoints)
+        
+    except Exception as e:
+        logger.error(f"Failed to batch write keypoints to database: {e}")
+        try:
+            db.commit()  # Rollback
+        except:
+            pass
+        return 0
+
+
 def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.ndarray, logger=None):
     """
     Write LightGlue matches to COLMAP database.
@@ -393,6 +478,67 @@ def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.nd
         
     except Exception as e:
         logger.warning(f"Failed to write matches to database for image pair ({image_id0}, {image_id1}): {e}")
+
+
+def batch_write_matches_to_database(db, matches_list: list, logger=None):
+    """
+    Batch write multiple match pairs to COLMAP database in a single transaction.
+    This is much faster than writing matches one by one.
+    
+    Args:
+        db: COLMAPDatabase connection
+        matches_list: List of tuples (image_id0, image_id1, matches_array)
+        logger: Optional logger instance
+    
+    Returns:
+        Number of successfully written match pairs
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    if not matches_list:
+        return 0
+    
+    try:
+        cursor = db.cursor()
+        MAX_IMAGE_ID = 2**31 - 1
+        
+        # Pre-process all matches: ensure correct image_id ordering and data type
+        processed_matches = []
+        for image_id0, image_id1, matches in matches_list:
+            if image_id0 > image_id1:
+                image_id0, image_id1 = image_id1, image_id0
+                matches = matches[:, [1, 0]]  # Swap match indices accordingly
+            
+            matches = np.asarray(matches, np.uint32)
+            processed_matches.append((image_id0, image_id1, matches))
+        
+        # Begin transaction
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # Delete existing matches for all pairs (batch delete)
+        for image_id0, image_id1, _ in processed_matches:
+            pair_id = image_id0 * MAX_IMAGE_ID + image_id1
+            cursor.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
+        
+        # Add all new matches (use database method which handles pair_id encoding)
+        for image_id0, image_id1, matches in processed_matches:
+            db.add_matches(image_id0, image_id1, matches)
+        
+        # Commit once for all operations
+        cursor.execute("COMMIT")
+        db.commit()
+        
+        logger.info(f"Batch wrote {len(processed_matches)} match pairs to database")
+        return len(processed_matches)
+        
+    except Exception as e:
+        logger.error(f"Failed to batch write matches to database: {e}")
+        try:
+            db.commit()  # Rollback
+        except:
+            pass
+        return 0
 
 
 def generate_sequential_match_list(
