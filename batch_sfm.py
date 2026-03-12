@@ -458,14 +458,14 @@ if __name__ == '__main__':
         # ==========================Colmap-SFM===============================================================================
         sfm_start = time.time()
         if "sfm" in args.pipeline:
-            sfm_pipeline_exe = os.path.join(current_path, "run-sfm-20260311/run-sfm.exe") 
+            sfm_command = os.path.join(current_path, "run-sfm-20260311/run-sfm.exe") 
             # sfm_command = "python sfm-colmap-3.14.0.py --alg acc "
             # sfm_command = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms acc "
             # sfm_command = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms sequential "
             # sfm_command = "python sfm-v6.py --alg acc --max_feature_num 2048 -splg "
             # sfm_command = sfm_pipeline_exe + " --alg acc -sms " + args.sift_match_strategy + " -so " + str(args.sequential_overlap) + " "
             sfm_output_dir = project_dir
-            sfm_with_colmap(sfm_pipeline_exe, data_path, sfm_output_dir)   
+            sfm_with_colmap(sfm_command, data_path, sfm_output_dir)   
 
         sfm_used = time.time() - sfm_start
         print("Sfm used: {:.2f}s".format(sfm_used))

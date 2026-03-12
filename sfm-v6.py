@@ -758,6 +758,7 @@ def extract_features_with_superpoint(
     
     # Extract features for all images
     logger.info("Extracting features with SuperPoint...")
+    logger.info(f"Device: {device}, Processing {len(image_files)} images")
     feature_start = time.time()
     
     image_features = {}
@@ -769,19 +770,29 @@ def extract_features_with_superpoint(
     extraction_log = []
     
     for idx, img_file in enumerate(image_files):
-        img_path = os.path.join(images_path, img_file)        
+        img_path = os.path.join(images_path, img_file)
+        
+        # Log memory status before processing each image (for GPU debugging)
+        if device == 'cuda':
+            try:
+                mem_alloc = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
+                mem_reserved = torch.cuda.memory_reserved() / 1024**3
+                logger.info(f"GPU Memory before {idx+1} Allocated: {mem_alloc:.2f}GB, Reserved: {mem_reserved:.2f}GB")
+            except Exception as mem_e:
+                pass
+        
         try:
             # Load image
-            # t1 = time.time()
-            # img_tensor = load_image(img_path).to(device) / 255.0
+            logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_file}")
             img_tensor = load_image_use_torchvision(img_path).to(device) / 255.0
-            # print("img shape: ", img_tensor.shape)
-            # logger.info(f"load img time: {time.time() - t1}")
+            # logger.debug(f"[{idx+1}] Image shape: {img_tensor.shape}")
+            
             # Extract features
-            # t2 = time.time()
+            # logger.debug(f"[{idx+1}] Extracting features...")
             with torch.no_grad():
                 feats = extractor.extract(img_tensor)
-            # logger.info(f"feature extract time: {time.time() - t2}")
+            # logger.debug(f"[{idx+1}] Feature extraction done")
+            
             # Get image ID from database
             cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_file,))
             result = cursor.fetchone()
@@ -790,6 +801,10 @@ def extract_features_with_superpoint(
                 logger.warning(f"Image {img_file} not found in database, skipping feature write")
                 image_features[img_file] = feats
                 image_id_map[img_file] = None
+                # Clear GPU memory
+                del img_tensor
+                if device == 'cuda':
+                    torch.cuda.empty_cache()
                 continue
             
             image_id = result[0]
@@ -822,11 +837,26 @@ def extract_features_with_superpoint(
             keypoints_to_write.append((image_id, keypoints, descriptors))
             extraction_log.append((idx, img_file, num_kpts, image_id))
 
-            logger.info(f"Extracting feature for image {idx+1}/{len(image_files)}: {img_file}, keypoints={num_kpts}, image_id={image_id}")
+            logger.info(f"{idx+1}/{len(image_files)} {img_file}: {num_kpts} keypoints, image_id={image_id}")
+            
+            # Clear GPU memory after each image
+            del img_tensor, feats
+            if device == 'cuda':
+                torch.cuda.empty_cache()
             
         except Exception as e:
-            logger.warning(f"Failed to extract features from {img_file}: {e}")
+            logger.warning(f"Failed to extract features from {img_file}: {e}", exc_info=True)
             image_features[img_file] = None
+            # Ensure cleanup on error
+            try:
+                del img_tensor
+            except:
+                pass
+            if device == 'cuda':
+                try:
+                    torch.cuda.empty_cache()
+                except:
+                    pass
             continue
     
     # Batch write all keypoints and descriptors to database (optimized - single transaction)

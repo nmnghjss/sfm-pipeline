@@ -142,7 +142,14 @@ if __name__ == '__main__':
             errors.ate_error_mean = 10000
             errors.rotate_angle_error_mean = 10000
         else:
-            errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)
+            base_images_pose_num = len(base_images)
+            update_images_pose_num = len(update_images)
+            print(f"base_images pose num: {base_images_pose_num}, update_images pose num: {update_images_pose_num}")
+            if base_images_pose_num < 3 or update_images_pose_num < 3:
+                errors.ate_error_mean = 10000
+                errors.rotate_angle_error_mean = 10000
+            else:
+                errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)
             errors.base_registered_num = base_registered_num
             errors.update_registered_num = update_registered_num
             errors.base_registered_ratio = base_registered_num / input_images_num if input_images_num > 0 else 0.0

@@ -107,6 +107,7 @@ def umeyama_align_ransac(X_dict, Y_dict, with_scale=True, max_iters=1000, inlier
     Y = np.array([Y_dict[k] for k in keys])
     
     assert X.shape == Y.shape
+    print("X.shape: ", X.shape)
     n, m = X.shape
 
     # 如果点少于3个，无法可靠估计，返回默认恒等变换并打印警告
@@ -344,6 +345,12 @@ def align_and_compute_error(base_images_pose:dict, update_images_pose:dict, visu
 
     # base_images_pos = np.array(base_images_pos)
     # update_images_pos = np.array(update_images_pos)
+    if len(base_images_pos) < 3 or len(update_images_pos) < 3:
+        errors = PoseError()
+        errors.ate_error_max = 10000
+        errors.rotate_angle_error_max = 10000
+        return errors
+
 
     ransac_max_iters = 1000
     inlier_threshold = 0.1  # 米
