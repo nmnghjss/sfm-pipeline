@@ -378,7 +378,7 @@ class LightGlue(nn.Module):
         },
     }
 
-    def __init__(self, features="superpoint", local_path=None,**conf) -> None:
+    def __init__(self, features="superpoint", local_path=None, **conf) -> None:
         super().__init__()
         self.conf = conf = SimpleNamespace(**{**self.default_conf, **conf})
         if features is not None:
@@ -422,16 +422,19 @@ class LightGlue(nn.Module):
             fname = f"{conf.weights}_{self.version.replace('.', '-')}.pth"
             print("LightGlue weights: {}".format(fname))
             if local_path is not None:
-                path = os.path.join(local_path, fname)
+                # path = os.path.join(local_path, fname)
+                path = local_path
                 print("Looking for local weights at {}".format(path))
                 if os.path.isfile(path):
                     state_dict = torch.load(str(path), map_location="cpu")
+                    print(f"success load dict from local path: {path}")
                 else:
                     warnings.warn(
                         f"Local weights not found at {path}, trying to download from the official repository.",
                         stacklevel=2,
                     )
             if state_dict is None:
+                print("to load dict from url")
                 state_dict = torch.hub.load_state_dict_from_url(
                     self.url.format(self.version, self.conf.weights),
                     file_name=fname,

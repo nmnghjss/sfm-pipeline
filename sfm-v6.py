@@ -11,8 +11,8 @@ import torch
 import numpy as np
 import cv2
 import sqlite3
-from lightglue import ALIKED, LightGlue, SuperPoint
-from lightglue.utils import load_image, rbd, load_image_use_torchvision
+from lightglue import ALIKED, LightGlue, SuperPoint, DISK
+from lightglue.utils import load_image, rbd, load_image_use_torchvision, safe_load_image, load_image_use_PIL
 from database import COLMAPDatabase, ReadColmapDatabase
 from visualization import visualize_image_pairs
 
@@ -32,7 +32,7 @@ parser.add_argument("--single_camera", "-sc",default="1", type=str)
 parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--alg", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
-parser.add_argument("--feature_type", "-ft", default="superpoint", type=str, choices=["superpoint", "aliked"], help="Feature type to use: superpoint or aliked")
+parser.add_argument("--feature_type", "-ft", default="superpoint", type=str, choices=["superpoint", "aliked", "disk"], help="Feature type to use: superpoint or aliked")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--SuperpointLightglue", "-splg", action="store_true", help="Use SuperPoint features instead of SIFT")
 parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", 
@@ -50,9 +50,10 @@ parser.add_argument("--sift_match_strategy", "-sms", type=str, default="acc", ch
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
+parser.add_argument("--clean", action="store_true", help="clean the output dir before sfm pipelene")
 args = parser.parse_args()
 
-args.SuperpointLightglue = True  # 强制使用 SuperPoint + LightGlue
+# args.SuperpointLightglue = True  # 强制使用 SuperPoint + LightGlue
 
 # =====================key parameter =====================================================
 min_num_inliers = args.min_num_inliers
@@ -97,6 +98,17 @@ else:
     if not Path(output_path).is_absolute():
         output_path = os.path.join(args.source_path, output_path)
 os.makedirs(output_path, exist_ok=True)
+
+if args.clean:
+    print(f"Cleaning output directory: {output_path}")
+    try:
+        shutil.rmtree(os.path.join(output_path, "distorted"), ignore_errors=True)
+        shutil.rmtree(os.path.join(output_path, "sparse"), ignore_errors=True)
+        shutil.rmtree(os.path.join(output_path, "dense"), ignore_errors=True)
+        shutil.rmtree(os.path.join(output_path, "stereo"), ignore_errors=True)
+        print("Output directory cleaned successfully.")
+    except Exception as e:
+        print(f"Failed to clean output directory: {e}")    
 
 # --------------------------
 # Logging setup
@@ -211,6 +223,7 @@ def initialize_colmap_database(
             "THIN_PRISM_FISHEYE":10,
             "RAD_TAN_THIN_PRISM_FISHEYE":11
         }.get(camera_model.upper(), 4)  # Default to OPENCV
+        logger.info(f"camera model {camera_model}, id: {camera_model_id}")
 
         if camera_model_id is None:
             logger.warning(f"Unknown camera model '{camera_model}', defaulting to OPENCV")
@@ -731,9 +744,11 @@ def extract_features_with_superpoint(
     if feature_type.lower() == "aliked":
         local_aliked_path = os.path.join(local_weights_root, "checkpoints/pth/aliked-n16rot.pth")
         extractor = ALIKED(local_path=local_aliked_path, max_num_keypoints=max_num_keypoints).eval().to(device)
-    else:
+    elif feature_type.lower() == "superpoint":
         local_superpoint_path = os.path.join(local_weights_root, "checkpoints/pth/superpoint_v1.pth")
-        extractor = SuperPoint(weights_path=local_superpoint_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+        extractor = SuperPoint(path_or_url=local_superpoint_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+    else:
+        extractor = DISK(max_num_keypoints=max_num_keypoints).eval().to(device)
 
     # Get list of images
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
@@ -779,21 +794,36 @@ def extract_features_with_superpoint(
                 mem_reserved = torch.cuda.memory_reserved() / 1024**3
                 logger.info(f"GPU Memory before {idx+1} Allocated: {mem_alloc:.2f}GB, Reserved: {mem_reserved:.2f}GB")
             except Exception as mem_e:
+                logger.warning("some unknow exception !!!")
                 pass
         
         try:
             # Load image
             logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_file}")
-            img_tensor = load_image_use_torchvision(img_path).to(device) / 255.0
+            img_tensor = load_image_use_torchvision(img_path, None, logger)
+            # img_u8 = load_image_use_PIL(img_path, None, logger)
+            # logger.info("to cp data to gpu")
+            # img_tensor = img_u8.to(device, non_blocking=False)
+            # logger.info("fininshed cp data to gpu")
+            # del img_u8
+            # logger.info("to cp data to gpu and convert uint8 to float")
+            img_tensor = img_tensor.to(device, non_blocking=False).float().div_(255.0)
+            # img_tensor = safe_load_image(image_path=img_path, logger=logger).to(device).div_(255.0)
+            # img_tensor = load_image(img_path).to(device) / 255.0
             # logger.debug(f"[{idx+1}] Image shape: {img_tensor.shape}")
+
+            if img_tensor is None:
+                logger.warning(f"failed to load image: {img_path}")
+                continue
             
             # Extract features
-            # logger.debug(f"[{idx+1}] Extracting features...")
+            logger.info(f"{idx+1}/{len(image_files)} Extracting features...")
             with torch.no_grad():
                 feats = extractor.extract(img_tensor)
-            # logger.debug(f"[{idx+1}] Feature extraction done")
+            # logger.info(f"[{idx+1}] Feature extraction done, keypoints num: {feats['keypoints'].shape}")
             
             # Get image ID from database
+            # logger.info("to fetch image id in database ")
             cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_file,))
             result = cursor.fetchone()
             
@@ -824,6 +854,7 @@ def extract_features_with_superpoint(
                 descriptors = descriptors_batch
             
             # Convert to numpy
+            # logger.info("convert keypoint to cpu")
             keypoints = keypoints.cpu().numpy()
             descriptors = descriptors.cpu().numpy()
             
@@ -837,7 +868,7 @@ def extract_features_with_superpoint(
             keypoints_to_write.append((image_id, keypoints, descriptors))
             extraction_log.append((idx, img_file, num_kpts, image_id))
 
-            logger.info(f"{idx+1}/{len(image_files)} {img_file}: {num_kpts} keypoints, image_id={image_id}")
+            logger.info(f"{idx+1}/{len(image_files)} {img_file}: image_id = {image_id}, keypoints_num = {num_kpts}")
             
             # Clear GPU memory after each image
             del img_tensor, feats
@@ -1007,7 +1038,8 @@ def match_features_with_lightglue(
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     weight_path = f"checkpoints/pth/{feature_type}_lightglue_v0-1_arxiv.pth"
     weight_path = os.path.join(weights_root, weight_path)
-    matcher = LightGlue(features=feature_type, path_or_url=weight_path).eval().to(device)
+    logger.info(f"weight_path: {weight_path}")
+    matcher = LightGlue(features=feature_type, local_path=weight_path).eval().to(device)
 
     logger.info(f"LightGlue Using device: {device}")
     # Connect to database
@@ -1425,8 +1457,8 @@ if args.alg == "acc":
         "--Mapper.ba_local_max_num_iterations", "12", # 25
         "--Mapper.ba_local_max_refinements", "2", # 2
         "--Mapper.ba_local_max_refinement_change", "0.001", # 0.001
-        "--Mapper.ba_global_frames_ratio", "2.0", # 1.1
-        "--Mapper.ba_global_points_ratio", "2.0", # 1.1
+        "--Mapper.ba_global_frames_ratio", "1.5", # 1.1
+        "--Mapper.ba_global_points_ratio", "1.5", # 1.1
         "--Mapper.ba_global_frames_freq", "5000", # 5000
         "--Mapper.ba_global_points_freq", "250000", # 250000
         "--Mapper.ba_global_max_num_iterations", "25", # 50 --> 20 --> 25
@@ -1599,7 +1631,6 @@ elif args.alg == "hierarchical_acc":
         "--Mapper.tri_min_angle", "1.5",
         "--Mapper.tri_ignore_two_view_tracks", "1"
     ]
-
 
 elif args.alg == "glomap":
     mapper_cmd = [

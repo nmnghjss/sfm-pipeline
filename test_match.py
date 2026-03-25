@@ -33,8 +33,8 @@ matcher = LightGlue(features='aliked', local_weights_root=local_weights_root).ev
 # matcher = LightGlue(features='superpoint').eval().to(device)
 
 # or DISK+LightGlue, ALIKED+LightGlue or SIFT+LightGlue
-# extractor = DISK(max_num_keypoints=2048).eval().to(device)  # load the extractor
-# matcher = LightGlue(features='disk').eval().to(device)  # load the matcher
+extractor = DISK(max_num_keypoints=2048).eval().to(device)  # load the extractor
+matcher = LightGlue(features='disk').eval().to(device)  # load the matcher
 
 
 # extractor = SIFT(max_num_keypoints=2048).eval().cuda()  # load the extractor
@@ -42,7 +42,7 @@ matcher = LightGlue(features='aliked', local_weights_root=local_weights_root).ev
 
 # load each image as a torch.Tensor on GPU with shape (3,H,W), normalized in [0,1]
 image0_path = "E:\\debug\\input\\ADSC00153_undist.jpg"
-image1_path = "mirrored_left_right.jpg"
+image1_path = "E:\\debug\\input\\ADSC00154_undist.jpg"
 
 start_time = time.time()
 image0 = load_image(image0_path).cuda() / 255.0

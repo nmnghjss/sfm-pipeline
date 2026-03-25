@@ -155,6 +155,7 @@ class SuperPoint(Extractor):
             import os
             if os.path.exists(path_or_url):
                 state_dict = torch.load(path_or_url, map_location='cpu')
+                print(f"success load dict from local path: {path_or_url}")
             else:
                 raise FileNotFoundError(f"Model file not found: {path_or_url}")
         

@@ -91,11 +91,20 @@ def pair_id_to_image_ids(pair_id):
     image_id1 = (pair_id - image_id2) / MAX_IMAGE_ID
     return image_id1, image_id2
 
+# def array_to_blob(array):
+#     if IS_PYTHON3:
+#         return array.tostring()
+#     else:
+#         return np.getbuffer(array)
+
 def array_to_blob(array):
-    if IS_PYTHON3:
-        return array.tostring()
-    else:
-        return np.getbuffer(array)
+    # 确保输入是 numpy 数组
+    if not isinstance(array, np.ndarray):
+        array = np.asanyarray(array)
+        
+    # 在 NumPy 2.x 中，必须使用 tobytes()
+    return array.tobytes()
+
 
 def blob_to_array(blob, dtype, shape=(-1,)):
     if IS_PYTHON3:
