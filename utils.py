@@ -215,10 +215,12 @@ def count_images_in_dir_recursive(root_dir, image_extensions=None):
     image_extensions = {ext.lower() for ext in image_extensions}
     
     count = 0
+    images_list = []
     for file in root.rglob('*'):
         if file.is_file() and file.suffix.lower() in image_extensions:
             count += 1
-    return count
+            images_list.append(file)
+    return count, images_list
 
 
 def clear_folder(folder_path):

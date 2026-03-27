@@ -5,6 +5,8 @@ import logging
 from argparse import ArgumentParser
 import shutil
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from utils import *
 from pathlib import Path
 import torch
@@ -23,8 +25,8 @@ parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--skip_matching", action='store_true')
 parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=str)
-parser.add_argument("--output_path", "-o", default="", type=str)
-parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
+parser.add_argument("--output_path", "-o", default="output_splg", type=str)
+parser.add_argument("--camera", default="RADIAL", type=str)
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
@@ -736,19 +738,38 @@ def extract_features_with_superpoint(
     if logger is None:
         logger = logging.getLogger()
     
-    # Initialize SuperPoint model
-    logger.info("Initializing SuperPoint model...")
+    def get_cpu_worker_count(task_count: int) -> int:
+        if task_count <= 0:
+            return 1
+        max_threads = os.cpu_count() or 1
+        return max(1, min(max_threads, task_count))
+
+    # Initialize feature extractor
+    logger.info("Initializing feature extractor...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    logger.info(f"Using device: {device}")
-    # local_weights_root = "checkpoints/pth"
-    if feature_type.lower() == "aliked":
-        local_aliked_path = os.path.join(local_weights_root, "checkpoints/pth/aliked-n16rot.pth")
-        extractor = ALIKED(local_path=local_aliked_path, max_num_keypoints=max_num_keypoints).eval().to(device)
-    elif feature_type.lower() == "superpoint":
-        local_superpoint_path = os.path.join(local_weights_root, "checkpoints/pth/superpoint_v1.pth")
-        extractor = SuperPoint(path_or_url=local_superpoint_path, max_num_keypoints=max_num_keypoints).eval().to(device)
-    else:
-        extractor = DISK(max_num_keypoints=max_num_keypoints).eval().to(device)
+    if not use_gpu:
+        device = 'cpu'
+    logger.info(f"Extract Feature using device: {device}")
+
+    def build_extractor():
+        if feature_type.lower() == "aliked":
+            local_aliked_path = os.path.join(local_weights_root, "checkpoints/pth/aliked-n16rot.pth")
+            return ALIKED(local_path=local_aliked_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+        if feature_type.lower() == "superpoint":
+            local_superpoint_path = os.path.join(local_weights_root, "checkpoints/pth/superpoint_v1.pth")
+            return SuperPoint(path_or_url=local_superpoint_path, max_num_keypoints=max_num_keypoints).eval().to(device)
+        return DISK(max_num_keypoints=max_num_keypoints).eval().to(device)
+
+    # GPU path keeps a single model; CPU multithread path lazily creates one model per thread
+    shared_extractor = build_extractor() if device == 'cuda' else None
+    extractor_tls = threading.local()
+
+    def get_thread_extractor():
+        if device == 'cuda':
+            return shared_extractor
+        if not hasattr(extractor_tls, "extractor"):
+            extractor_tls.extractor = build_extractor()
+        return extractor_tls.extractor
 
     # Get list of images
     image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
@@ -767,6 +788,8 @@ def extract_features_with_superpoint(
     try:
         db = COLMAPDatabase.connect(database_path)
         cursor = db.cursor()
+        cursor.execute("SELECT image_id, name FROM images")
+        db_name_to_id = {name: image_id for image_id, name in cursor.fetchall()}
     except Exception as e:
         logger.error(f"Failed to connect to database: {e}")
         return {}, {}, 0
@@ -777,118 +800,119 @@ def extract_features_with_superpoint(
     feature_start = time.time()
     
     image_features = {}
-    image_id_map = {}
+    image_id_map = dict(db_name_to_id)
     total_keypoints = 0
     
     # Buffer for batch write operations
     keypoints_to_write = []
     extraction_log = []
     
-    for idx, img_file in enumerate(image_files):
+    def process_single_image(idx: int, img_file: str):
         img_path = os.path.join(images_path, img_file)
-        
-        # Log memory status before processing each image (for GPU debugging)
-        if device == 'cuda':
-            try:
-                mem_alloc = torch.cuda.memory_allocated() / 1024**3  # Convert to GB
-                mem_reserved = torch.cuda.memory_reserved() / 1024**3
-                logger.info(f"GPU Memory before {idx+1} Allocated: {mem_alloc:.2f}GB, Reserved: {mem_reserved:.2f}GB")
-            except Exception as mem_e:
-                logger.warning("some unknow exception !!!")
-                pass
-        
+        img_tensor = None
+        feats = None
         try:
-            # Load image
+            if device == 'cuda':
+                try:
+                    mem_alloc = torch.cuda.memory_allocated() / 1024**3
+                    mem_reserved = torch.cuda.memory_reserved() / 1024**3
+                    logger.info(f"GPU Memory before {idx+1} Allocated: {mem_alloc:.2f}GB, Reserved: {mem_reserved:.2f}GB")
+                except Exception:
+                    logger.warning("Failed to read GPU memory usage")
+
             logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_file}")
             img_tensor = load_image_use_torchvision(img_path, None, logger)
-            # img_u8 = load_image_use_PIL(img_path, None, logger)
-            # logger.info("to cp data to gpu")
-            # img_tensor = img_u8.to(device, non_blocking=False)
-            # logger.info("fininshed cp data to gpu")
-            # del img_u8
-            # logger.info("to cp data to gpu and convert uint8 to float")
-            img_tensor = img_tensor.to(device, non_blocking=False).float().div_(255.0)
-            # img_tensor = safe_load_image(image_path=img_path, logger=logger).to(device).div_(255.0)
-            # img_tensor = load_image(img_path).to(device) / 255.0
-            # logger.debug(f"[{idx+1}] Image shape: {img_tensor.shape}")
-
             if img_tensor is None:
-                logger.warning(f"failed to load image: {img_path}")
-                continue
-            
-            # Extract features
-            logger.info(f"{idx+1}/{len(image_files)} Extracting features...")
+                return {
+                    "idx": idx, "img_file": img_file, "feats": None, "image_id": db_name_to_id.get(img_file),
+                    "keypoints": None, "descriptors": None, "num_kpts": 0, "error": f"failed to load image: {img_path}"
+                }
+
+            img_tensor = img_tensor.to(device, non_blocking=False).float().div_(255.0)
             with torch.no_grad():
-                feats = extractor.extract(img_tensor)
-            # logger.info(f"[{idx+1}] Feature extraction done, keypoints num: {feats['keypoints'].shape}")
-            
-            # Get image ID from database
-            # logger.info("to fetch image id in database ")
-            cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_file,))
-            result = cursor.fetchone()
-            
-            if result is None:
-                logger.warning(f"Image {img_file} not found in database, skipping feature write")
-                image_features[img_file] = feats
-                image_id_map[img_file] = None
-                # Clear GPU memory
-                del img_tensor
-                if device == 'cuda':
-                    torch.cuda.empty_cache()
-                continue
-            
-            image_id = result[0]
-            image_features[img_file] = feats
-            image_id_map[img_file] = image_id
-            
-            # Extract keypoints and descriptors (remove batch dimension)
+                feats = get_thread_extractor().extract(img_tensor)
+
+            image_id = db_name_to_id.get(img_file)
+            if image_id is None:
+                return {
+                    "idx": idx, "img_file": img_file, "feats": feats, "image_id": None,
+                    "keypoints": None, "descriptors": None, "num_kpts": 0,
+                    "error": f"Image {img_file} not found in database, skipping feature write"
+                }
+
             keypoints_batch = feats['keypoints']
             descriptors_batch = feats['descriptors']
-            
-            # Remove batch dimension if present
             if keypoints_batch.dim() == 3 and keypoints_batch.shape[0] == 1:
                 keypoints = keypoints_batch[0]
                 descriptors = descriptors_batch[0]
             else:
                 keypoints = keypoints_batch
                 descriptors = descriptors_batch
-            
-            # Convert to numpy
-            # logger.info("convert keypoint to cpu")
-            keypoints = keypoints.cpu().numpy()
-            descriptors = descriptors.cpu().numpy()
-            
-            # Descriptors from SuperPoint are Float32 in range [0, 1], convert to uint8
-            descriptors = (descriptors * 255.0).astype(np.uint8)
-            
-            num_kpts = keypoints.shape[0]
-            total_keypoints += num_kpts
-            
-            # Buffer keypoints for batch write
-            keypoints_to_write.append((image_id, keypoints, descriptors))
-            extraction_log.append((idx, img_file, num_kpts, image_id))
 
-            logger.info(f"{idx+1}/{len(image_files)} {img_file}: image_id = {image_id}, keypoints_num = {num_kpts}")
-            
-            # Clear GPU memory after each image
-            del img_tensor, feats
-            if device == 'cuda':
-                torch.cuda.empty_cache()
-            
+            keypoints_np = keypoints.cpu().numpy()
+            descriptors_np = descriptors.cpu().numpy()
+            descriptors_np = (descriptors_np * 255.0).astype(np.uint8)
+
+            return {
+                "idx": idx, "img_file": img_file, "feats": feats, "image_id": image_id,
+                "keypoints": keypoints_np, "descriptors": descriptors_np,
+                "num_kpts": int(keypoints_np.shape[0]), "error": None
+            }
         except Exception as e:
-            logger.warning(f"Failed to extract features from {img_file}: {e}", exc_info=True)
-            image_features[img_file] = None
-            # Ensure cleanup on error
+            return {
+                "idx": idx, "img_file": img_file, "feats": None, "image_id": db_name_to_id.get(img_file),
+                "keypoints": None, "descriptors": None, "num_kpts": 0, "error": str(e)
+            }
+        finally:
             try:
                 del img_tensor
-            except:
+            except Exception:
                 pass
             if device == 'cuda':
                 try:
                     torch.cuda.empty_cache()
-                except:
+                except Exception:
                     pass
-            continue
+
+    if device == 'cpu':
+        cpu_workers = get_cpu_worker_count(len(image_files))
+        cpu_workers = 1
+        logger.info(f"CPU mode detected, using multithreaded extraction with {cpu_workers} workers (system max={os.cpu_count() or 1})")
+        progress_interval = max(1, len(image_files) // 100)
+        with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
+            futures = {
+                executor.submit(process_single_image, idx, img_file): (idx, img_file)
+                for idx, img_file in enumerate(image_files)
+            }
+            for completed_idx, future in enumerate(as_completed(futures), start=1):
+                res = future.result()
+                img_file = res["img_file"]
+                image_features[img_file] = res["feats"]
+                image_id_map[img_file] = res["image_id"]
+
+                if res["error"]:
+                    logger.warning(f"Failed to process {img_file}: {res['error']}")
+                    continue
+
+                total_keypoints += res["num_kpts"]
+                keypoints_to_write.append((res["image_id"], res["keypoints"], res["descriptors"]))
+                extraction_log.append((res["idx"], img_file, res["num_kpts"], res["image_id"]))
+                if completed_idx % progress_interval == 0 or completed_idx == len(image_files):
+                    logger.info(f"  Extraction progress: {completed_idx}/{len(image_files)}")
+    else:
+        for idx, img_file in enumerate(image_files):
+            res = process_single_image(idx, img_file)
+            image_features[img_file] = res["feats"]
+            image_id_map[img_file] = res["image_id"]
+
+            if res["error"]:
+                logger.warning(f"Failed to process {img_file}: {res['error']}")
+                continue
+
+            total_keypoints += res["num_kpts"]
+            keypoints_to_write.append((res["image_id"], res["keypoints"], res["descriptors"]))
+            extraction_log.append((idx, img_file, res["num_kpts"], res["image_id"]))
+            logger.info(f"{idx+1}/{len(image_files)} {img_file}: image_id = {res['image_id']}, keypoints_num = {res['num_kpts']}")
     
     # Batch write all keypoints and descriptors to database (optimized - single transaction)
     logger.info(f"Writing {len(keypoints_to_write)} images' keypoints to database in batch mode...")
@@ -1033,13 +1057,34 @@ def match_features_with_lightglue(
     if logger is None:
         logger = logging.getLogger()
     
+    def get_cpu_worker_count(task_count: int) -> int:
+        if task_count <= 0:
+            return 1
+        max_threads = os.cpu_count() or 1
+        return max(1, min(max_threads, task_count))
+
     # Initialize LightGlue matcher
     logger.info("Initializing LightGlue matcher...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    if not use_gpu:
+        device = 'cpu'
     weight_path = f"checkpoints/pth/{feature_type}_lightglue_v0-1_arxiv.pth"
     weight_path = os.path.join(weights_root, weight_path)
     logger.info(f"weight_path: {weight_path}")
-    matcher = LightGlue(features=feature_type, local_path=weight_path).eval().to(device)
+
+    def build_matcher():
+        return LightGlue(features=feature_type, local_path=weight_path).eval().to(device)
+
+    # GPU path keeps one matcher; CPU multithread path creates matcher lazily per thread
+    shared_matcher = build_matcher() if device == 'cuda' else None
+    matcher_tls = threading.local()
+
+    def get_thread_matcher():
+        if device == 'cuda':
+            return shared_matcher
+        if not hasattr(matcher_tls, "matcher"):
+            matcher_tls.matcher = build_matcher()
+        return matcher_tls.matcher
 
     logger.info(f"LightGlue Using device: {device}")
     # Connect to database
@@ -1103,44 +1148,78 @@ def match_features_with_lightglue(
     logger.info(f"Performing LightGlue matching on {len(match_pairs)} pairs...")
     match_progress_interval = max(1, len(match_pairs) // 100)
     
-    for pair_idx, (i, img_name0, j, img_name1) in enumerate(match_pairs):
-        if pair_idx % match_progress_interval == 0 and pair_idx > 0:
-            progress_pct = ((pair_idx+1) / len(match_pairs)) * 100
-            logger.info(f"  Progress: {progress_pct:.1f}% ({pair_idx}/{len(match_pairs)})")
-        
+    def process_pair(pair_idx: int, pair):
+        _, img_name0, _, img_name1 = pair
         try:
-            feats0 = image_features[img_name0]
-            feats1 = image_features[img_name1]
-            
+            feats0 = image_features.get(img_name0)
+            feats1 = image_features.get(img_name1)
             if feats0 is None or feats1 is None:
-                continue
-            
-            image_id0 = image_id_map[img_name0]
-            image_id1 = image_id_map[img_name1]
-            
+                return None
+
+            image_id0 = image_id_map.get(img_name0)
+            image_id1 = image_id_map.get(img_name1)
             if image_id0 is None or image_id1 is None:
-                continue
-            
-            # Perform matching
+                return None
+
             with torch.no_grad():
-                matches01 = matcher({'image0': feats0, 'image1': feats1})
-            
-            # Remove batch dimension
-            feats0_rbd, feats1_rbd, matches01_rbd = [rbd(x) for x in [feats0, feats1, matches01]]
+                matches01 = get_thread_matcher()({'image0': feats0, 'image1': feats1})
+            _, _, matches01_rbd = [rbd(x) for x in [feats0, feats1, matches01]]
             matches = matches01_rbd['matches'].cpu().numpy()
-            
-            if len(matches) > 15:
+            if len(matches) <= 15:
+                return None
+
+            return (image_id0, image_id1, matches, img_name0, img_name1, int(len(matches)))
+        except Exception as e:
+            return ("_error_", img_name0, img_name1, str(e))
+
+    if device == 'cpu':
+        cpu_workers = get_cpu_worker_count(len(match_pairs))
+        cpu_workers = 1
+        logger.info(f"CPU mode detected, using multithreaded matching with {cpu_workers} workers (system max={os.cpu_count() or 1})")
+        with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
+            futures = [
+                executor.submit(process_pair, pair_idx, pair)
+                for pair_idx, pair in enumerate(match_pairs)
+            ]
+            for pair_idx, future in enumerate(as_completed(futures)):
+                if pair_idx % match_progress_interval == 0 and pair_idx > 0:
+                    progress_pct = ((pair_idx + 1) / len(match_pairs)) * 100
+                    logger.info(f"  Progress: {progress_pct:.1f}% ({pair_idx}/{len(match_pairs)})")
+
+                result = future.result()
+                if result is None:
+                    continue
+                if result[0] == "_error_":
+                    _, img_name0, img_name1, err = result
+                    logger.warning(f"Failed to match {img_name0} and {img_name1}: {err}")
+                    continue
+
+                image_id0, image_id1, matches, img_name0, img_name1, match_count = result
                 total_match_pairs += 1
-                total_matches += len(matches)
-                match_statistics.append((img_name0, img_name1, len(matches)))
-                
-                # Buffer matches for batch write
+                total_matches += match_count
+                match_statistics.append((img_name0, img_name1, match_count))
                 matches_to_write.append((image_id0, image_id1, matches))
                 match_list_pairs.append((img_name0, img_name1))
-            
-        except Exception as e:
-            logger.warning(f"Failed to match {img_name0} and {img_name1}: {e}")
-            continue
+    else:
+        for pair_idx, pair in enumerate(match_pairs):
+            if pair_idx % match_progress_interval == 0 and pair_idx > 0:
+                progress_pct = ((pair_idx+1) / len(match_pairs)) * 100
+                logger.info(f"  Progress: {progress_pct:.1f}% ({pair_idx}/{len(match_pairs)})")
+
+            result = process_pair(pair_idx, pair)
+            if result is None:
+                continue
+            if result[0] == "_error_":
+                _, img_name0, img_name1, err = result
+                logger.warning(f"Failed to match {img_name0} and {img_name1}: {err}")
+                continue
+
+            image_id0, image_id1, matches, img_name0, img_name1, match_count = result
+            total_match_pairs += 1
+            total_matches += match_count
+            match_statistics.append((img_name0, img_name1, match_count))
+            matches_to_write.append((image_id0, image_id1, matches))
+            match_list_pairs.append((img_name0, img_name1))
     
     # Batch write all matches to database (optimized - single transaction)
     logger.info(f"Writing {total_match_pairs} match pairs to database in batch mode...")
@@ -1656,14 +1735,14 @@ elif args.mapper == "glomap":
         "--TrackEstablishment.min_num_view_per_track", "3",
         "--TrackEstablishment.max_num_view_per_track", "100",
         "--TrackEstablishment.max_num_tracks", "10000000",
-        "--GlobalPositioning.use_gpu", "1",
+        "--GlobalPositioning.use_gpu", str(use_gpu),
         "--GlobalPositioning.gpu_index", "-1",
         "--GlobalPositioning.optimize_positions", "1",
         "--GlobalPositioning.optimize_points", "1",
         "--GlobalPositioning.optimize_scales", "1",
         "--GlobalPositioning.thres_loss_function", "0.1", # 0.1
         "--GlobalPositioning.max_num_iterations", "100",
-        "--BundleAdjustment.use_gpu", "1",
+        "--BundleAdjustment.use_gpu", str(use_gpu),
         "--BundleAdjustment.gpu_index", "-1",
         "--BundleAdjustment.optimize_rig_poses", "0",
         "--BundleAdjustment.optimize_rotations", "1",
