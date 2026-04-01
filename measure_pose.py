@@ -387,11 +387,11 @@ if __name__ == "__main__":
     args = ArgumentParser(description="Measure camera poses from COLMAP output")
     args.add_argument("--colmap_output_base", "-b", type=str, required=True, help="Path to the base COLMAP output directory")
     args.add_argument("--colmap_output_update", "-u", type=str, default=None, help="Path to the upodate COLMAP output directory")
-    args.add_argument("--visualize", action='store_true', default=False, help="Whether to visualize the alignment errors")
+    args.add_argument("--visualize", "-vis", action='store_true', default=False, help="Whether to visualize the alignment errors")
     args = args.parse_args()
 
     try:
-        base_cameras, base_images, base_points3D = read_model(args.colmap_output_base, ext=".bin")
+        base_cameras, base_images, base_points3D = read_model(args.colmap_output_base, ext=".txt")
         update_cameras, update_images, update_points3D = read_model(args.colmap_output_update, ext=".bin")
 
         errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)

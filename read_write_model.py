@@ -497,19 +497,23 @@ def read_model(path, ext=""):
             print("Provide model format: '.bin' or '.txt'")
             return None, None, None
 
+    cameras_path = os.path.join(path, "cameras" + ext)
+    images_path = os.path.join(path, "images" + ext)
+    points3D_path = os.path.join(path, "points3D") + ext
+
+    cameras = None
     if ext == ".txt":
-        cameras = read_cameras_text(os.path.join(path, "cameras" + ext))
-        images = read_images_text(os.path.join(path, "images" + ext))
-        points3D = read_points3D_text(os.path.join(path, "points3D") + ext)
+        if os.path.exists(cameras_path):
+            cameras = read_cameras_text(cameras_path)
+        images = read_images_text(images_path)
+        points3D = read_points3D_text(points3D_path)
     else:
-        cameras_path = os.path.join(path, "cameras" + ext)
-        images_path = os.path.join(path, "images" + ext)
-        points3D_path = os.path.join(path, "points3D") + ext
-        if not os.path.exists(cameras_path) or not os.path.exists(images_path) or not os.path.exists(points3D_path):
+        if not os.path.exists(images_path) or not os.path.exists(points3D_path):
             return None, None, None
-        cameras = read_cameras_binary(os.path.join(path, "cameras" + ext))
-        images = read_images_binary(os.path.join(path, "images" + ext))
-        points3D = read_points3D_binary(os.path.join(path, "points3D") + ext)
+        if os.path.exists(cameras_path):
+            cameras = read_cameras_binary(cameras_path)
+        images = read_images_binary(images_path)
+        points3D = read_points3D_binary(points3D_path)
     return cameras, images, points3D
 
 

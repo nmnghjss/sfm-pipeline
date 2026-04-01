@@ -33,6 +33,7 @@ parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="1", type=str)
 parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
+parser.add_argument("--thread_num", default=-1, type=int)
 parser.add_argument("--mapper", default="acc", type=str, help="Algorithm for matching and mapping: colmap / acc / glomap")
 parser.add_argument("--feature_type", "-ft", default="superpoint", type=str, choices=["superpoint", "aliked", "disk"], help="Feature type to use: superpoint or aliked")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
@@ -876,7 +877,9 @@ def extract_features_with_superpoint(
 
     if device == 'cpu':
         cpu_workers = get_cpu_worker_count(len(image_files))
-        cpu_workers = 1
+        if args.thread_num >= 1:
+            cpu_workers = args.thread_num
+        # cpu_workers = 1
         logger.info(f"CPU mode detected, using multithreaded extraction with {cpu_workers} workers (system max={os.cpu_count() or 1})")
         progress_interval = max(1, len(image_files) // 100)
         with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
@@ -1174,7 +1177,8 @@ def match_features_with_lightglue(
 
     if device == 'cpu':
         cpu_workers = get_cpu_worker_count(len(match_pairs))
-        cpu_workers = 1
+        if args.thread_num >= 1:
+            cpu_workers = args.thread_num
         logger.info(f"CPU mode detected, using multithreaded matching with {cpu_workers} workers (system max={os.cpu_count() or 1})")
         with ThreadPoolExecutor(max_workers=cpu_workers) as executor:
             futures = [

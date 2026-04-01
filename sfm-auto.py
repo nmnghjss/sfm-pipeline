@@ -27,10 +27,11 @@ parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
+parser.add_argument("--quality", default="medium", type=str, choices=["low", "medium", "high", "extreme"])
 parser.add_argument("--feature_type", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree"], help="Matching strategy to use")
 parser.add_argument("--match_type", "-mt", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
-parser.add_argument("--mapper", default="global", type=str, choices=["global", "hierarchical", "hierarchical_acc"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc")
+parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "hierarchical", "global"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc")
 # parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 # parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
 #                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
@@ -184,7 +185,7 @@ auto_reconstruct_cmd = [
     "--image_path", images_path,
     "--vocab_tree_path", vocab_path,
     "--data_type", "individual",
-    "--quality", "EXTREME",
+    "--quality", args.quality,
     "--camera_model", args.camera,
     "--single_camera", str(args.single_camera),
     "--single_camera_per_folder", str(args.single_fold),
@@ -194,7 +195,7 @@ auto_reconstruct_cmd = [
     "--sparse", "1",
     "--dense", "0",
     "--feature", args.feature_type,
-    "--mapper", "GLOBAL",
+    "--mapper", args.mapper,
     # "--mesher", "0",
     "--num_threads", "-1",
     "--random_seed", "-1",
