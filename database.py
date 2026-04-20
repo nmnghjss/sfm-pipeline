@@ -387,6 +387,164 @@ def ReadColmapDatabase(path):
     return view_graph, cameras, images, feature_name
 
 
+
+def initialize_colmap_database(
+    database_path: str,
+    images_path: str,
+    camera_model: str = "OPENCV",
+    logger: logging.Logger = None
+) -> bool:
+    """
+    Initialize COLMAP database and add image metadata without extracting SIFT features.
+    This is more efficient than using COLMAP's feature_extractor when you plan to use
+    custom feature extractors like SuperPoint.
+    
+    Args:
+        database_path: Path to create/initialize COLMAP database
+        images_path: Path to images directory
+        camera_model: Camera model (e.g., "OPENCV", "PINHOLE")
+        args: Arguments object with camera parameters
+        logger: Optional logger instance
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    try:
+        logger.info("Initializing COLMAP database without SIFT extraction...")
+        
+        # Create/connect to database
+        db = COLMAPDatabase.connect(database_path)
+        db.create_tables()
+        
+        # Get image list
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        image_files = sorted([
+            f for f in os.listdir(images_path)
+            if os.path.splitext(f)[1].lower() in image_extensions
+        ])
+        
+        if not image_files:
+            logger.error(f"No images found in {images_path}")
+            db.close()
+            return False
+        
+        logger.info(f"Found {len(image_files)} images")
+        
+        # Add single camera to database (using first image dimensions)
+        # Use PIL to read image dimensions only (more efficient and handles non-ASCII paths)
+        first_image_path = os.path.join(images_path, image_files[0])
+        try:
+            from PIL import Image
+            img = Image.open(first_image_path)
+            width, height = img.size
+        except Exception as e:
+            logger.error(f"Failed to read first image dimensions: {first_image_path}. Error: {e}")
+            db.close()
+            return False
+        
+        logger.info(f"Image dimensions: {width}x{height}")
+        
+        # Map camera model string to COLMAP model ID    
+        camera_model_id = {
+            "SIMPLE_PINHOLE": 0,
+            "PINHOLE": 1,
+            "SIMPLE_RADIAL": 2,
+            "RADIAL": 3,
+            "OPENCV": 4,
+            "OPENCV_FISHEYE": 5,
+            "FULL_OPENCV": 6,
+            "FOV": 7,
+            "SIMPLE_RADIAL_FISHEYE":8,
+            "RADIAL_FISHEYE":9,
+            "THIN_PRISM_FISHEYE":10,
+            "RAD_TAN_THIN_PRISM_FISHEYE":11
+        }.get(camera_model.upper(), 4)  # Default to OPENCV
+        logger.info(f"camera model {camera_model}, id: {camera_model_id}")
+
+        if camera_model_id is None:
+            logger.warning(f"Unknown camera model '{camera_model}', defaulting to OPENCV")
+            camera_model_id = 4
+
+        if camera_model_id == 0:
+            # SIMPLE_PINHOLE: f, cx, cy
+            camera_params = [max(width, height), width / 2, height / 2]
+        elif camera_model_id == 1:
+            # PINHOLE: fx, fy, cx, cy
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2]
+        elif camera_model_id == 2:
+            # SIMPLE_RADIAL: f, cx, cy, k
+            camera_params = [max(width, height), width / 2, height / 2, 0.0]
+        elif camera_model_id == 3:
+            # RADIAL: f, cx, cy, k1, k2
+            camera_params = [max(width, height), width / 2, height / 2, 0.0, 0.0]
+        elif camera_model_id == 4:
+            # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0]
+        elif camera_model_id == 5:
+            # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0]
+        elif camera_model_id == 6:
+            # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        elif camera_model_id == 7:
+            # FOV: fx, fy, cx, cy, omega
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0]
+        elif camera_model_id == 8:
+            # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
+            camera_params = [max(width, height), width / 2, height / 2, 0.0]
+        elif camera_model_id == 9:
+            # RADIAL_FISHEYE: f, cx, cy, k1, k2
+            camera_params = [max(width, height), width / 2, height / 2, 0.0, 0.0]
+        elif camera_model_id == 10:
+            # THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1";
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        elif camera_model_id == 11:
+            # RAD_TAN_THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3"
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        else:
+            logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
+            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0]
+            camera_model_id = 4  # OPENCV
+        
+        camera_id = db.add_camera(
+            model=camera_model_id,
+            width=width,
+            height=height,
+            params=camera_params,
+            prior_focal_length=False
+        )
+        logger.info(f"Added camera: model={camera_model}, id={camera_id}")
+        db.commit()
+        
+        # Add images to database
+        image_count = 0
+        for image_idx, image_file in enumerate(image_files):
+            try:
+                image_id = db.add_image(
+                    name=image_file,
+                    camera_id=camera_id
+                )
+                image_count += 1
+                if (image_idx + 1) % 100 == 0:
+                    logger.info(f"  Added {image_idx + 1}/{len(image_files)} images to database")
+            except Exception as e:
+                logger.warning(f"Failed to add image {image_file}: {e}")
+                continue
+        
+        db.commit()
+        db.close()
+        
+        logger.info(f"Successfully initialized database with {image_count} images")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}")
+        return False
+
+
 def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_ratio=0.1, logger=None):
     """
     根据内点数量和内点比例阈值过滤数据库中的匹配对，删除不满足条件的匹配
@@ -525,3 +683,200 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
             logger.info(f"  ... and {len(problematic_pairs)-10} more pairs")
     
     return removed_count
+
+
+def write_keypoints_to_database(db, image_id: int, keypoints: np.ndarray, descriptors: np.ndarray, logger=None):
+    """
+    Write SuperPoint keypoints and descriptors to COLMAP database.
+    Replaces COLMAP SIFT features with SuperPoint features.
+    
+    Args:
+        db: COLMAPDatabase connection
+        image_id: Image ID in database
+        keypoints: (N, 2) array of keypoint coordinates
+        descriptors: (N, 256) array of feature descriptors (SuperPoint outputs 256-dim)
+        logger: Optional logger instance
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    try:
+        # Delete existing features for this image first
+        cursor = db.cursor()
+        cursor.execute("DELETE FROM keypoints WHERE image_id = ?", (image_id,))
+        cursor.execute("DELETE FROM descriptors WHERE image_id = ?", (image_id,))
+        db.commit()
+        
+        # Ensure correct data types
+        keypoints = np.asarray(keypoints, np.float32)
+        descriptors = np.asarray(descriptors, np.uint8)  # COLMAP expects uint8
+        
+        # Use database methods to write
+        db.add_keypoints(image_id, keypoints)
+        db.add_descriptors(image_id, descriptors)
+        db.commit()
+        
+        # logger.debug(f"Wrote {len(keypoints)} keypoints for image_id {image_id}")
+        
+    except Exception as e:
+        logger.warning(f"Failed to write features to database for image {image_id}: {e}")
+
+
+def batch_write_keypoints_to_database(db, keypoints_list: list, logger=None):
+    """
+    Batch write multiple images' keypoints and descriptors to COLMAP database in a single transaction.
+    This is much faster than writing keypoints one by one.
+    
+    Args:
+        db: COLMAPDatabase connection
+        keypoints_list: List of tuples (image_id, keypoints_array, descriptors_array)
+        logger: Optional logger instance
+    
+    Returns:
+        Number of successfully written images
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    if not keypoints_list:
+        return 0
+    
+    try:
+        cursor = db.cursor()
+        
+        # Pre-process all keypoints: ensure correct data types
+        processed_keypoints = []
+        for image_id, keypoints, descriptors in keypoints_list:
+            keypoints = np.asarray(keypoints, np.float32)
+            descriptors = np.asarray(descriptors, np.uint8)  # COLMAP expects uint8
+            processed_keypoints.append((image_id, keypoints, descriptors))
+        
+        # Begin transaction
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # Delete existing features for all images (batch delete)
+        for image_id, _, _ in processed_keypoints:
+            cursor.execute("DELETE FROM keypoints WHERE image_id = ?", (image_id,))
+            cursor.execute("DELETE FROM descriptors WHERE image_id = ?", (image_id,))
+        
+        # Add all new keypoints and descriptors (use database methods which handle encoding)
+        for image_id, keypoints, descriptors in processed_keypoints:
+            db.add_keypoints(image_id, keypoints)
+            db.add_descriptors(image_id, descriptors)
+        
+        # Commit once for all operations
+        cursor.execute("COMMIT")
+        db.commit()
+        
+        logger.info(f"Batch wrote {len(processed_keypoints)} images' keypoints and descriptors to database")
+        return len(processed_keypoints)
+        
+    except Exception as e:
+        logger.error(f"Failed to batch write keypoints to database: {e}")
+        try:
+            db.commit()  # Rollback
+        except:
+            pass
+        return 0
+
+
+def write_matches_to_database(db, image_id0: int, image_id1: int, matches: np.ndarray, logger=None):
+    """
+    Write LightGlue matches to COLMAP database.
+    
+    Args:
+        db: COLMAPDatabase connection
+        image_id0: First image ID
+        image_id1: Second image ID
+        matches: (K, 2) array of keypoint indices that match
+        logger: Optional logger instance
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    try:
+        # Ensure image_id0 < image_id1 for consistent pair_id encoding
+        if image_id0 > image_id1:
+            image_id0, image_id1 = image_id1, image_id0
+            matches = matches[:, [1, 0]]  # Swap match indices accordingly
+        
+        # Delete existing matches for this pair first (important!)
+        cursor = db.cursor()
+        MAX_IMAGE_ID = 2**31 - 1
+        pair_id = image_id0 * MAX_IMAGE_ID + image_id1
+        cursor.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
+        db.commit()
+        
+        # Ensure correct data type
+        matches = np.asarray(matches, np.uint32)
+        
+        # Use database method to write (handles pair_id encoding automatically)
+        db.add_matches(image_id0, image_id1, matches)
+        db.commit()
+        
+        # logger.debug(f"Wrote {len(matches)} matches between images {image_id0} and {image_id1}")
+        
+    except Exception as e:
+        logger.warning(f"Failed to write matches to database for image pair ({image_id0}, {image_id1}): {e}")
+
+
+def batch_write_matches_to_database(db, matches_list: list, logger=None):
+    """
+    Batch write multiple match pairs to COLMAP database in a single transaction.
+    This is much faster than writing matches one by one.
+    
+    Args:
+        db: COLMAPDatabase connection
+        matches_list: List of tuples (image_id0, image_id1, matches_array)
+        logger: Optional logger instance
+    
+    Returns:
+        Number of successfully written match pairs
+    """
+    if logger is None:
+        logger = logging.getLogger()
+    
+    if not matches_list:
+        return 0
+    
+    try:
+        cursor = db.cursor()
+        MAX_IMAGE_ID = 2**31 - 1
+        
+        # Pre-process all matches: ensure correct image_id ordering and data type
+        processed_matches = []
+        for image_id0, image_id1, matches in matches_list:
+            if image_id0 > image_id1:
+                image_id0, image_id1 = image_id1, image_id0
+                matches = matches[:, [1, 0]]  # Swap match indices accordingly
+            
+            matches = np.asarray(matches, np.uint32)
+            processed_matches.append((image_id0, image_id1, matches))
+        
+        # Begin transaction
+        cursor.execute("BEGIN TRANSACTION")
+        
+        # Delete existing matches for all pairs (batch delete)
+        for image_id0, image_id1, _ in processed_matches:
+            pair_id = image_id0 * MAX_IMAGE_ID + image_id1
+            cursor.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
+        
+        # Add all new matches (use database method which handles pair_id encoding)
+        for image_id0, image_id1, matches in processed_matches:
+            db.add_matches(image_id0, image_id1, matches)
+        
+        # Commit once for all operations
+        cursor.execute("COMMIT")
+        db.commit()
+        
+        logger.info(f"Batch wrote {len(processed_matches)} match pairs to database")
+        return len(processed_matches)
+        
+    except Exception as e:
+        logger.error(f"Failed to batch write matches to database: {e}")
+        try:
+            db.commit()  # Rollback
+        except:
+            pass
+        return 0
+

@@ -1,11 +1,12 @@
 
+import ctypes
 import sys
 import os
 import subprocess
 import logging
 from typing import Optional
 import shutil
-import logging
+from typing import List
 
 def check_operating_system():
     """
@@ -290,8 +291,6 @@ def copy_file(src, dst):
         return False
     
 
-from typing import List
-
 def get_first_level_subdirs(parent_dir: str) -> List[str]:
     """
     获取指定目录下的第一级子目录（不递归）
@@ -363,7 +362,6 @@ def find_directories_by_name(root_folder, target_name):
     return matched_directories
 
 
-
 def move_folder(source_dir: str, target_parent_dir: str) -> bool:
     """
     将源文件夹移动到指定的目标父文件夹中
@@ -417,3 +415,30 @@ def move_folder(source_dir: str, target_parent_dir: str) -> bool:
     except Exception as e:
         print(f"移动失败：未知错误 - {str(e)}")
         return False
+    
+
+# Helper function to convert Chinese paths to short paths on Windows
+def get_short_path_name(long_path):
+    """
+    Convert a long path to its short (8.3) path format on Windows.
+    This helps handle paths with non-ASCII characters (like Chinese).
+    
+    Args:
+        long_path: The long path to convert
+        
+    Returns:
+        Short path if on Windows, original path otherwise
+    """
+    if sys.platform != 'win32':
+        return long_path
+    
+    try:
+        buffer = ctypes.create_unicode_buffer(260)
+        if ctypes.windll.kernel32.GetShortPathNameW(long_path, buffer, len(buffer)):
+            short_path = buffer.value
+            logger.debug(f"Converted path: {long_path} -> {short_path}")
+            return short_path
+    except Exception as e:
+        logger.warning(f"Failed to convert path to short format: {e}")
+    
+    return long_path  # Fallback to the original path if conversion fails

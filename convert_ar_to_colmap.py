@@ -196,7 +196,7 @@ def visualize(pcd, poses, intrinsics):
     vis.run()
     vis.destroy_window()
 
-def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt"):
+def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt", camera_model="SIMPLE_RADIAL"):
     """
     fmt: "txt" or "bin"
     """
@@ -218,7 +218,16 @@ def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt"):
         with open(cam_path, "w") as f:
             f.write("# Camera list\n")
             f.write("# CAMERA_ID, MODEL, WIDTH, HEIGHT, PARAMS[]\n\n")
-            f.write(f"1 PINHOLE {w} {h} {fx} {fy} {cx} {cy}\n")
+            if camera_model == "PINHOLE":
+                f.write(f"1 {camera_model} {w} {h} {fx} {fy} {cx} {cy}\n")
+            elif camera_model == "SIMPLE_PINHOLE":
+                f.write(f"1 {camera_model} {w} {h} {max(fx, fy)} {cx} {cy}\n")
+            elif camera_model == "RADIAL":
+                f.write(f"1 {camera_model} {w} {h} {max(fx, fy)} {cx} {cy} 0.0000 0.0000\n")
+            elif camera_model == "SIMPLE_RADIAL":
+                f.write(f"1 {camera_model} {w} {h} {max(fx, fy)} {cx} {cy} 0.0000\n")
+            else:
+                f.write(f"1 PINHOLE {w} {h} {fx} {fy} {cx} {cy}\n")
 
     # -------------------------
     # images.txt
@@ -272,8 +281,6 @@ def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt"):
     print(f"[INFO] TXT model exported to: {output_dir}")
 
     # -------------------------
-    # 如果需要 BIN
-    # -------------------------
     if fmt == "bin":
         cmd = [
             "colmap", "model_converter",
@@ -292,7 +299,6 @@ def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt"):
             bufsize=1,  # line-buffered
             shell=False  # Windows, using list command
         )
-
         print(f"[INFO] BIN model exported to: {output_dir}")
 
 # -----------------------------
@@ -301,15 +307,16 @@ def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt"):
 if __name__ == "__main__":
 
     argpaser = ArgumentParser("visualize ar output")
-    argpaser.add_argument("--ar_output", type=str, required=True, help="ar output dir, must containing pose, points and intrinsic files")
-    argpaser.add_argument("--colmap_output", type=str, required=True)
+    argpaser.add_argument("--input", type=str, required=True, help="ar output dir, must containing pose, points and intrinsic files")
+    argpaser.add_argument("--output", type=str, required=True)
+    argpaser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
     argpaser.add_argument("--vis", action="store_true")
 
     args = argpaser.parse_args()
 
-    points_path = os.path.join(args.ar_output, "scan_all_pointcloud.ply")
-    poses_path = os.path.join(args.ar_output, "scan_all_pose.ply")
-    intrinsic_path = os.path.join(args.ar_output, "scan_camera_intrinsics.txt")
+    points_path = os.path.join(args.input, "scan_all_pointcloud.ply")
+    poses_path = os.path.join(args.input, "scan_all_pose.ply")
+    intrinsic_path = os.path.join(args.input, "scan_camera_intrinsics.txt")
 
     pcd = load_point_cloud(points_path)
     poses = load_poses(poses_path)
@@ -319,9 +326,18 @@ if __name__ == "__main__":
     else:
         intrinsics = None
 
-    os.makedirs(args.colmap_output, exist_ok=True)
+    output_path = args.output
+    if not os.path.isabs(output_path):
+        output_path = os.path.join(args.input, output_path)
 
-    export_to_colmap(pcd, poses, intrinsics, args.colmap_output, fmt="txt")
+    os.makedirs(output_path, exist_ok=True)
+
+    export_to_colmap(pcd, poses, intrinsics, output_path, fmt="txt")
+
+    keyframesDir = os.path.join(args.input, "FrameExtraction")
+    if os.path.exists(keyframesDir):
+        newDir = os.path.join(args.input, "input")
+        os.rename(keyframesDir, newDir)
 
     if args.vis:
         visualize(pcd, poses, intrinsics)

@@ -4,16 +4,18 @@ import logging
 from argparse import ArgumentParser
 import shutil
 import time
-from utils import *
-import numpy as np
-import cv2
-from database import COLMAPDatabase, ReadColmapDatabase, filter_matches_by_inliers
+from datetime import datetime
+from mapper_cmd import get_ba_cmd, get_incremental_mapper_cmd, get_hierarchical_mapper_cmd, get_global_mapper_cmd, get_points_triangulate_cmd, get_pose_prior_global_mapper_cmd, get_pose_prior_mapper_cmd
+from utils import run_subprocess, check_operating_system, count_images_in_dir_recursive, get_largest_subfolder, clear_folder
+from database import ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
-import ctypes
 
-# --------------------------
-# Argument parser
-# --------------------------
+from match_utils import compute_matched_image_pairs_by_pose_prior
+from database import initialize_colmap_database
+from feature_extractor_cmd import get_feature_extractor_cmd, extract_neural_features
+from match_cmd import get_exhaustive_matcher_cmd, generate_sequential_match_list, get_matches_importer_cmd, get_vocab_tree_matcher_cmd, match_features_with_lightglue
+
+#  ========================== Argument parser ========================== 
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--skip_matching", action='store_true')
@@ -29,15 +31,11 @@ parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree"], help="Matching strategy to use")
+parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="global", type=str, choices=["acc", "global", "hierarchical", "hierarchical_acc", "pose_prior"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="pose_prior_global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
-parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
-                    help="Max number of similar images to match per image (for nearest_k/quick strategies)")
-parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
-                    help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
@@ -47,16 +45,17 @@ parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help=
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
+parser.add_argument("--external_splg", action="store_true", help="Whether to use external SuperPoint + LightGlue for feature extraction and matching instead of COLMAP's built-in methods")
+parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
+                    help="Max number of similar images to match per image (for nearest_k/quick strategies)")
+parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
+                    help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
+parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
+                    help="Similarity threshold for threshold-based matching strategy (0~1)")
+parser.add_argument("--ar_pose_path", type=str, help="Path to AR pose file (if available)")
+parser.add_argument("--refine_num", type=int, default=3, help="refine reconstruction iterations num")
 args = parser.parse_args()
 
-# ========================== Helper functions =========================
-def resource_path() -> str:
-    """Get absolute path for packaged or development scripts."""
-    try:
-        base_path = sys._MEIPASS
-    except AttributeError:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return base_path
 
 # ============================== output path ============================
 if args.output_path == "":
@@ -67,6 +66,16 @@ else:
         output_path = os.path.join(args.source_path, output_path)
 os.makedirs(output_path, exist_ok=True)
 
+
+
+# ========================== Helper functions =========================
+def resource_path() -> str:
+    """Get absolute path for packaged or development scripts."""
+    try:
+        base_path = sys._MEIPASS
+    except AttributeError:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return base_path
 
 # ============================ Logging setup ===============================
 log_level = args.log_level
@@ -84,7 +93,8 @@ logger.addHandler(ch)
 # File handler
 log_dir = output_path
 os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, "run-sfm.log")
+now_str = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+log_file = os.path.join(log_dir, f"run-sfm-{now_str}.log")
 fh = logging.FileHandler(log_file, encoding="utf-8")
 fh.setLevel(log_level)
 fh.setFormatter(log_formatter)
@@ -95,7 +105,10 @@ logger.addHandler(fh)
 start_time = time.time()
 feature_extraction_time = 0
 feature_matching_time = 0
-splg_time = 0
+view_graph_calibrate_time = 0
+triangulate_time = 0
+ba_time = 0
+refine_time = 0
 mapper_time = 0
 
 # =====================key parameter =====================================================
@@ -108,8 +121,6 @@ if feature_match_type != "UNDEFINED":
         feature_match_type = "SIFT" + "_" + feature_match_type
     else:
         feature_match_type = "ALIKED" + "_" + feature_match_type
-
-
 
 # ===================== Paths and executables ============================================
 os_type = check_operating_system()
@@ -143,141 +154,15 @@ elif args.feature_type == "ALIKED_N32":
 else:
     vocab_path = ""
 
-
-
 # ========================== clean output directory ==========================
 if args.clean:
-    print(f"Cleaning output directory: {output_path}")
+    logger.info(f"Cleaning output directory: {output_path}")
     try:
-        shutil.rmtree(os.path.join(output_path, "distorted"), ignore_errors=True)
-        shutil.rmtree(os.path.join(output_path, "sparse"), ignore_errors=True)
-        shutil.rmtree(os.path.join(output_path, "dense"), ignore_errors=True)
-        shutil.rmtree(os.path.join(output_path, "stereo"), ignore_errors=True)
-        print("Output directory cleaned successfully.")
+        clear_folder(output_path)
     except Exception as e:
-        print(f"Failed to clean output directory: {e}")
+        logger.info(f"Failed to clean output directory: {e}")   
 
-
-# ======================== GPU setup ==========================================
-use_gpu = 0 if args.no_gpu else 1
-
-# ==============================================================================
-# Helper function to convert Chinese paths to short paths on Windows
-def get_short_path_name(long_path):
-    """
-    Convert a long path to its short (8.3) path format on Windows.
-    This helps handle paths with non-ASCII characters (like Chinese).
-    
-    Args:
-        long_path: The long path to convert
-        
-    Returns:
-        Short path if on Windows, original path otherwise
-    """
-    if sys.platform != 'win32':
-        return long_path
-    
-    try:
-        buffer = ctypes.create_unicode_buffer(260)
-        if ctypes.windll.kernel32.GetShortPathNameW(long_path, buffer, len(buffer)):
-            short_path = buffer.value
-            logger.debug(f"Converted path: {long_path} -> {short_path}")
-            return short_path
-    except Exception as e:
-        logger.warning(f"Failed to convert path to short format: {e}")
-    
-    return long_path  # Fallback to the original path if conversion fails
-
-# ==============================================================================
-
-def generate_sequential_match_list(
-    image_names: list,
-    overlap: int = 30,
-    output_file: str = None,
-    logger: logging.Logger = None
-) -> list:
-    """
-    Generate sequential image matching pairs with circular overlap.
-    
-    This function creates a list of image pairs for sequential matching where:
-    - Images are sorted and matched with their neighbors
-    - Each image matches with N images before and after it (overlap parameter)
-    - For images at the beginning, it loops to match with images at the end
-    - For images at the end, it loops to match with images at the beginning
-    
-    Args:
-        image_names: List of image names (will be sorted)
-        overlap: Number of neighboring images to match on each side (default: 30)
-        output_file: Optional path to save match list to text file
-        logger: Optional logger instance
-    
-    Returns:
-        List of tuples (image1_name, image2_name) representing match pairs
-        Also writes to output_file if provided
-    """
-    if logger is None:
-        logger = logging.getLogger()
-    
-    # Sort image names for consistent ordering
-    sorted_images = sorted(image_names)
-    n_images = len(sorted_images)
-    
-    if n_images < 2:
-        logger.warning("Not enough images for sequential matching")
-        return []
-    
-    # Adjust overlap to not exceed available images
-    effective_overlap = min(overlap, n_images - 1)
-    
-    match_pairs = []
-    match_set = set()  # To avoid duplicate pairs
-    
-    for i in range(n_images):
-        img0 = sorted_images[i]
-        
-        # Generate indices for images to match with (before and after)
-        # Range: [i - effective_overlap, i + effective_overlap]
-        match_indices = []
-        
-        # Add images after current image
-        for offset in range(1, effective_overlap + 1):
-            j = (i + offset) % n_images
-            match_indices.append(j)
-        
-        # Add images before current image (to complete the circle)
-        for offset in range(1, effective_overlap + 1):
-            j = (i - offset) % n_images
-            if j < i:  # Only add if not already added
-                match_indices.append(j)
-        
-        # Create match pairs ensuring i < j to avoid duplicates
-        for j in match_indices:
-            if i != j:
-                # Create canonical pair (smaller index first)
-                pair_i, pair_j = (i, j) if i < j else (j, i)
-                pair_key = (pair_i, pair_j)
-                
-                if pair_key not in match_set:
-                    match_set.add(pair_key)
-                    match_pairs.append((sorted_images[pair_i], sorted_images[pair_j]))
-    
-    logger.info(f"Generated {len(match_pairs)} sequential match pairs with overlap={effective_overlap}")
-    
-    # Write to file if specified
-    if output_file:
-        try:
-            os.makedirs(os.path.dirname(output_file) or '.', exist_ok=True)
-            with open(output_file, 'w') as f:
-                for img1, img2 in match_pairs:
-                    f.write(f"{img1} {img2}\n")
-            logger.info(f"Match list saved to: {output_file}")
-        except Exception as e:
-            logger.error(f"Failed to save match list to {output_file}: {e}")
-    
-    return match_pairs
-
-
-# ========================= Feature extraction ==================================
+# ========================== Start of the pipeline ============================
 logger.info("=== Starting Structure-from-Motion Pipeline ===")
 logger.info(f"Source path: {args.source_path}")
 logger.info(f"Output path: {output_path}")
@@ -285,8 +170,8 @@ distorted_sparse_path = os.path.join(output_path, "distorted/sparse")
 os.makedirs(distorted_sparse_path, exist_ok=True)
 
 database_path = os.path.join(output_path, "distorted/database.db")
-match_list_path = os.path.join(distorted_sparse_path, "image_pairs_to_match.txt")
 images_path = os.path.join(args.source_path, "input")
+matched_images_pairs_path = os.path.join(distorted_sparse_path, "image_pairs.txt")
 
 input_img_num, image_files = count_images_in_dir_recursive(images_path)
 logger.info(f"input images num: {input_img_num}")
@@ -296,214 +181,205 @@ image_files = sorted([
     if os.path.splitext(f)[1].lower() in image_extensions
 ])
 
-
 logger.info(f"Found {len(image_files)} images")
 
-feat_extraction_cmd = [
-    colmap_command, "feature_extractor",
-    "--log_level", str(log_level),
-    "--database_path", database_path,
-    "--image_path", images_path,
-    "--FeatureExtraction.type", args.feature_type, # UNDEFINED, SIFT, ALIKED_N16ROT, ALIKED_N32
-    "--ImageReader.single_camera_per_image", str(args.single_image),
-    "--ImageReader.single_camera_per_fold", str(args.single_fold),
-    "--ImageReader.single_camera", str(args.single_camera),
-    "--ImageReader.camera_model", args.camera,
-    # "--ImageReader.mask_path", args.mask_path,
-    # "--ImageReader.existing_camera_id", str(args.existing_camera_id),
-    # "--ImageReader.camera_params", args.camera_params,
-    "--ImageReader.default_focal_length_factor", str(args.default_focal_length_factor),
-    # "--ImageReader.camera_mask_path", args.camera_mask_path,
-    # "--FeatureExtraction.num_threads", str(args.num_threads),
-    "--FeatureExtraction.use_gpu", str(use_gpu),
-    "--FeatureExtraction.gpu_index","-1",
-    "--FeatureExtraction.max_image_size", str(args.max_image_size),
-    "--SiftExtraction.max_num_features", str(args.max_feature_num),
-    # "--SiftExtraction.first_octave", str(args.first_octave),
-    # "--SiftExtraction.num_octaves", str(args.num_octaves),
-    # "--SiftExtraction.octave_resolution", str(args.octave_resolution),
-    # "--SiftExtraction.peak_threshold", str(args.peak_threshold),
-    # "--SiftExtraction.edge_threshold", str(args.edge_threshold),
-    # "--SiftExtraction.estimate_affine_shape", str(args.estimate_affine_shape),
-    # "--SiftExtraction.max_num_orientations", str(args.max_num_orientations),
-    # "--SiftExtraction.upright", str(args.upright),
-    "--SiftExtraction.domain_size_pooling", "0",
-    "--SiftExtraction.dsp_min_scale", "0.167",
-    "--SiftExtraction.dsp_max_scale", "3",
-    "--SiftExtraction.dsp_num_scales", "10",
-    "--AlikedExtraction.max_num_features", str(args.max_feature_num),
-    "--AlikedExtraction.min_score", "0.2",
-    "--AlikedExtraction.n16rot_model_path", aliked_n16rot_path,
-    "--AlikedExtraction.n32_model_path", aliked_n32_path
+# ======================== GPU setup ==========================================
+use_gpu = 0 if args.no_gpu else 1
 
-]
-logger.info("Starting feature extraction with COLMAP SIFT...")
-t0 = time.time()
-run_subprocess(feat_extraction_cmd, logger)
-feature_extraction_time = time.time() - t0
-logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
+# ============================ find matched pairs using slam pose (optional) ==========
+if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
+    logger.info(f"Finding image pairs based on AR poses from: {args.ar_pose_path}")
+    # pcd=load_point_cloud(os.path.join(args.ar_pose_path, "scan_all_pointcloud.ply"))
+    # poses=load_poses(os.path.join(args.ar_pose_path, "scan_all_pose.ply"))
+    # intrinsics=load_intrinsics(os.path.join(args.ar_pose_path, "scan_camera_intrinsics.txt"))
+    # build_frustum_overlap_voxel(
+    #     pcd=pcd,
+    #     poses=poses,
+    #     intrinsics=intrinsics,
+    #     output_txt=matched_images_pairs_path,
+    #     voxel_size=0.1,
+    #     max_pairs_per_image=args.max_matches_per_image,
+    #     overlap_thresh=0.5,
+    #     max_angle=np.radians(45)  # 45度视角约束
+    # )
 
-# --- Feature matching ---
-logger.info("Starting feature matching...")
-t1 = time.time()
-if args.match_strategy == "exhaustive":
-    feat_matching_cmd = [
-        colmap_command, "exhaustive_matcher",
-        "--log_level", str(log_level), # 0
-        "--database_path", database_path,
-        "--ExhaustiveMatching.block_size", "200", # 50 
-        "--FeatureMatching.type", feature_match_type, # UNDEFINED, SIFT_BRUTEFORCE, ALIKED_LIGHTGLUE, ALIKED_N32
-        # "--FeatureMatching.num_threads", str(args.num_threads),
-        "--FeatureMatching.use_gpu", str(use_gpu),
-        # "--FeatureMatching.gpu_index", str(args.gpu_index),
-        "--FeatureMatching.guided_matching", "0",
-        # "--FeatureMatching.skip_geometric_verification", str(args.skip_geometric_verification),
-        "--FeatureMatching.rig_verification", "0",
-        "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
-        "--FeatureMatching.max_num_matches", str(args.max_feature_num),
-        "--SiftMatching.max_ratio", "0.8",
-        "--SiftMatching.max_distance", "0.7",
-        "--SiftMatching.cross_check", "1",
-        "--SiftMatching.cpu_brute_force_matcher", "0",
-        "--SiftMatching.lightglue_min_score", "0.1",
-        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
-        "--AlikedMatching.brute_force_min_cossim", "0.85",
-        "--AlikedMatching.brute_force_max_ratio", "1",
-        "--AlikedMatching.brute_force_cross_check", "1",
-        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
-        "--AlikedMatching.lightglue_min_score", "0.1",
-        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
-        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
-        "--TwoViewGeometry.multiple_models", "0",
-        "--TwoViewGeometry.compute_relative_pose", "0",
-        "--TwoViewGeometry.detect_watermark", "1",
-        "--TwoViewGeometry.multiple_ignore_watermark", "1",
-        "--TwoViewGeometry.watermark_detection_max_error", "4",
-        "--TwoViewGeometry.filter_stationary_matches", "0",
-        "--TwoViewGeometry.stationary_matches_max_error", "4",
-        "--TwoViewGeometry.max_error", "4",
-        "--TwoViewGeometry.confidence", "0.999",
-        "--TwoViewGeometry.max_num_trials", "10000",
-        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
-        "--TwoViewGeometry.random_seed", "-1",
-    ]
-elif args.match_strategy == "sequential":
-    # Generate sequential match list with circular overlap
-    logger.info("Generating sequential match pairs...")
+    if not os.path.isabs(args.ar_pose_path):
+        args.ar_pose_path = os.path.join(args.source_path, args.ar_pose_path)
+    compute_matched_image_pairs_by_pose_prior(args.ar_pose_path, matched_images_pairs_path, overlap_thresh=0.5)
+    logger.info(f"AR pose-based image pairs saved to: {matched_images_pairs_path}")
+
+# ========================= Feature extraction ==================================
+
+if args.external_splg:
+    logger.info("Using SuperPoint + LightGlue for feature extraction and matching...")
+    logger.info(f"  Match strategy: {args.match_strategy}")
+    if args.match_strategy in ["nearest_k", "quick"]:
+        logger.info(f"  Max matches per image: {args.max_matches_per_image}")
     
-    # Get image names from image_files
-    image_names = [os.path.basename(f) for f in image_files]
+    # Initialize COLMAP database with images (without SIFT extraction)
+    logger.info("Initializing COLMAP database with image metadata (without feature extraction)...")
+    splg_start = time.time()    
+    db_init_success = initialize_colmap_database(
+        database_path=database_path,
+        images_path=images_path,
+        camera_model=args.camera,
+        logger=logger
+    )    
+    if not db_init_success:
+        logger.error("Failed to initialize database!")
+        sys.exit(1)
     
-    # Define overlap parameter from command-line argument
-    seq_overlap = args.sequential_overlap
-    
-    # Generate match pairs and save to file
-    seq_match_list_path = os.path.join(output_path, "sequential_match_list.txt")
-    match_pairs = generate_sequential_match_list(
-        image_names=image_names,
-        overlap=seq_overlap,
-        output_file=seq_match_list_path,
+    if args.feature_type.lower().startswith("aliked"):
+        logger.info(f"Using {args.feature_type} features for extraction and matching")
+        args.feature_type = "aliked"
+    # Now run SuperPoint feature extraction    
+    image_features, image_id_map, feat_ext_time = extract_neural_features(
+        args.feature_type,
+        current_path,
+        database_path, 
+        images_path, 
+        max_num_keypoints=args.max_feature_num,
         logger=logger
     )
+    feature_extraction_time = time.time() - splg_start
+    logger.info(f"SuperPoint feature extraction time: {feature_extraction_time:.2f} s (including database writes)")
     
-    logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={seq_overlap})")
-    
-    # Use matches_importer to import the sequential match list
-    feat_matching_cmd = [
-        colmap_command, "matches_importer",
-        "--log_level", str(log_level),
-        "--database_path", database_path,
-        "--match_list_path", seq_match_list_path,
-        "--match_alg", "pairs", # {'pairs', 'raw', 'inliers'}               
-        "--FeatureMatching.type", feature_match_type, # UNDEFINED, SIFT, ALIKED_LIGHTGLUE, ALIKED_N32
-        "--FeatureMatching.num_threads", "-1",
-        "--FeatureMatching.use_gpu", str(use_gpu),
-        "--FeatureMatching.gpu_index", "-1",
-        "--FeatureMatching.guided_matching", "0",
-        "--FeatureMatching.skip_geometric_verification", "0"
-        "--FeatureMatching.rig_verification", "0",
-        "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
-        "--FeatureMatching.max_num_matches", str(args.max_feature_num),
-        "--SiftMatching.max_ratio", "0.8",
-        "--SiftMatching.max_distance", "0.7",
-        "--SiftMatching.cross_check", "1",
-        "--SiftMatching.cpu_brute_force_matcher", "0",
-        "--SiftMatching.lightglue_min_score", "0.1",
-        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
-        "--AlikedMatching.brute_force_min_cossim", "0.85",
-        "--AlikedMatching.brute_force_max_ratio", "1",
-        "--AlikedMatching.brute_force_cross_check", "1",
-        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
-        "--AlikedMatching.lightglue_min_score", "0.1",
-        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
-        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
-        "--TwoViewGeometry.multiple_models", "0",
-        "--TwoViewGeometry.compute_relative_pose", "0",
-        "--TwoViewGeometry.detect_watermark", "1",
-        "--TwoViewGeometry.multiple_ignore_watermark", "1",
-        "--TwoViewGeometry.watermark_detection_max_error", "4",
-        "--TwoViewGeometry.filter_stationary_matches", "0",
-        "--TwoViewGeometry.stationary_matches_max_error", "4",
-        "--TwoViewGeometry.max_error", "4",
-        "--TwoViewGeometry.confidence", "0.999",
-        "--TwoViewGeometry.max_num_trials", "10000",
-        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
-        "--TwoViewGeometry.random_seed", "-1"
-    ]
-elif args.match_strategy == "vocab_tree":
-    feat_matching_cmd = [
-        colmap_command, "vocab_tree_matcher",
-        "--log_level", str(log_level),
-        "--database_path", database_path,        
-        "--FeatureMatching.use_gpu", str(use_gpu),
-        "--FeatureMatching.gpu_index", "-1",
-        "--FeatureMatching.type", feature_match_type,
-        "--FeatureMatching.num_threads", "-1",        
-        "--FeatureMatching.guided_matching", "0",
-        "--FeatureMatching.skip_geometric_verification", "0",
-        "--FeatureMatching.rig_verification", "0",
-        "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
-        "--FeatureMatching.max_num_matches", str(args.max_feature_num),
-        "--SiftMatching.max_ratio", "0.8",
-        "--SiftMatching.max_distance", "0.7",
-        "--SiftMatching.cross_check", "1",
-        "--SiftMatching.cpu_brute_force_matcher", "0",
-        "--SiftMatching.lightglue_min_score", "0.1",
-        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
-        "--AlikedMatching.brute_force_min_cossim", "0.85",
-        "--AlikedMatching.brute_force_max_ratio", "1",
-        "--AlikedMatching.brute_force_cross_check", "1",
-        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
-        "--AlikedMatching.lightglue_min_score", "0.1",
-        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
-        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
-        "--TwoViewGeometry.multiple_models", "0",
-        "--TwoViewGeometry.compute_relative_pose", "0",
-        "--TwoViewGeometry.detect_watermark", "0",
-        "--TwoViewGeometry.multiple_ignore_watermark", "1",
-        "--TwoViewGeometry.watermark_detection_max_error", "4",
-        "--TwoViewGeometry.filter_stationary_matches", "0",
-        "--TwoViewGeometry.stationary_matches_max_error", "4",
-        "--TwoViewGeometry.max_error", "4",
-        "--TwoViewGeometry.confidence", "0.9999",
-        "--TwoViewGeometry.max_num_trials", "10000",
-        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25
-        "--TwoViewGeometry.random_seed", "-1",
-        "--VocabTreeMatching.num_images", str(args.max_matches_per_image), # 100
-        "--VocabTreeMatching.num_nearest_neighbors", "5", # 5
-        "--VocabTreeMatching.num_checks", "64",
-        "--VocabTreeMatching.num_images_after_verification", "0", # 0
-        "--VocabTreeMatching.max_num_features", str(args.vocab_feature_num),
-        "--VocabTreeMatching.vocab_tree_path", vocab_path,
-        # "--VocabTreeMatching.match_list_path", match_list_path,
-        "--VocabTreeMatching.num_threads", "-1"
-    ]
+    # Run LightGlue feature matching
+    args.match_strategy = "threshold"
+    match_start = time.time()
+    feat_match_time = match_features_with_lightglue(
+        current_path,
+        args.feature_type,
+        database_path,
+        image_features,
+        image_id_map,
+        match_list_path=matched_images_pairs_path,
+        match_strategy=args.match_strategy,
+        max_matches_per_image=args.max_matches_per_image,
+        min_matches_per_image=args.min_matches_per_image,
+        similarity_threshold=args.similarity_threshold,
+        logger=logger
+    )
 
-run_subprocess(feat_matching_cmd, logger)
-feature_matching_time = time.time() - t1
-logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
+    # --- Import matches using COLMAP matches_importer ---
+    logger.info("Importing matches into COLMAP database using matches_importer...")
+    logger.info(f"Match list path: {matched_images_pairs_path}")
+    logger.info(f"Database path: {database_path}")
+    matches_importer_cmd = get_matches_importer_cmd(
+        colmap_command=colmap_command,
+        log_level = log_level, 
+        database_path=database_path,
+        matched_images_pairs_path=matched_images_pairs_path,
+        feature_match_type = "SIFT_BRUTEFORCE", 
+        use_gpu = 1,
+        max_feature_num = 2048,
+        min_num_inliers = 30,
+        min_inlier_ratio = 0.1,                             
+        sift_lightglue_match_path = sift_lightglue_match_path,
+        bruteforce_match_path = bruteforce_match_path,
+        aliked_lightglue_match_path = aliked_lightglue_match_path
+    )
+    run_subprocess(matches_importer_cmd, logger)
+    feature_matching_time = time.time() - match_start
+    logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
 
-# --------------- calibrate view graph -------------------------------------
+else:
+    logger.info("Using COLMAP for feature extraction and matching...")
+    feat_extraction_cmd = get_feature_extractor_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        feature_type=args.feature_type,
+        single_camera_per_image=int(args.single_image),
+        single_camera_per_fold=int(args.single_fold),
+        single_camera=int(args.single_camera),
+        camera_model=args.camera,
+        default_focal_length_factor=args.default_focal_length_factor,
+        use_gpu=use_gpu,
+        max_image_size=args.max_image_size,
+        max_feature_num=args.max_feature_num,
+        aliked_n16rot_path=aliked_n16rot_path,
+        aliked_n32_path=aliked_n32_path
+    )
+    logger.info("Starting feature extraction with COLMAP SIFT...")
+    t0 = time.time()
+    run_subprocess(feat_extraction_cmd, logger)
+    feature_extraction_time = time.time() - t0
+    logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
+
+    # ========================= Feature matching ========================= 
+    logger.info("Starting feature matching...")
+    t1 = time.time()
+    if args.match_strategy == "exhaustive":
+        feat_matching_cmd = get_exhaustive_matcher_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path
+        )
+    elif args.match_strategy == "sequential":
+        # Generate sequential match list with circular overlap
+        logger.info("Generating sequential match pairs...")
+        
+        # Get image names from image_files
+        image_names = [os.path.basename(f) for f in image_files]
+
+        # Generate match pairs and save to file
+        match_pairs = generate_sequential_match_list(
+            image_names=image_names,
+            overlap=args.sequential_overlap,
+            output_file=matched_images_pairs_path,
+            logger=logger
+        )
+        
+        logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={args.sequential_overlap})")
+        
+        # Use matches_importer to import the sequential match list
+        feat_matching_cmd = get_matches_importer_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            matched_images_pairs_path=matched_images_pairs_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio
+        )
+    elif args.match_strategy == "vocab_tree":
+        feat_matching_cmd = get_vocab_tree_matcher_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            max_matches_per_image=args.max_matches_per_image,
+            vocab_feature_num=args.vocab_feature_num,
+            vocab_path=vocab_path
+        )
+    run_subprocess(feat_matching_cmd, logger)
+    feature_matching_time = time.time() - t1
+    logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
+
+# ========================= Calibrate view graph ========================= 
+view_graph_calibrate_start = time.time()
 view_graph_calibrate_cmd = [
     colmap_command, "view_graph_calibrator",
     "--log_level", str(log_level),
@@ -518,13 +394,11 @@ view_graph_calibrate_cmd = [
     "--relpose_min_num_inliers", "30",
     "--relpose_min_inlier_ratio", "0.25",
 ]
-
-view_graph_calibrate_start_time = time.time()
 run_subprocess(view_graph_calibrate_cmd, logger)
-view_graph_calibrate_time = time.time() - view_graph_calibrate_start_time
+view_graph_calibrate_time = time.time() - view_graph_calibrate_start
 logger.info(f"View graph calibrate done in {view_graph_calibrate_time:.2f} s")
 
-## --------- visualize matches (optional) ---------
+# ========================= Visualize matches (optional) =========================
 if args.visualize_matches:
     logger.info("Visualizing matches for a few image pairs...")
     view_graph, cameras, images, feature_name = ReadColmapDatabase(database_path)
@@ -538,7 +412,7 @@ if args.visualize_matches:
         print("Visualization completed.")
 
 
-## ----------------- filt matches by inliers (optional) -----------------
+# ========================= Filter matches by inliers (optional) =========================
 if args.filt_match:
     logger.info("Filtering matches by inliers before mapping...")
     filted_paris_num = filter_matches_by_inliers(
@@ -549,351 +423,190 @@ if args.filt_match:
     )
     logger.info(f"Filtering done. removed pairs: {filted_paris_num}")
 
-# --------------------------
-# Mapper / Bundle Adjustment
-# --------------------------
+# ========================= Points triangulation with pose prior (optional) =========================
+if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
+    logger.info("Using ar-based mapper...")
+
+    triangulate_cmd = get_points_triangulate_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        ar_pose_path=args.ar_pose_path,
+        min_num_inliers=min_num_inliers
+    )
+    triangulate_start = time.time()
+    run_subprocess(triangulate_cmd, logger)
+    triangulate_time = time.time() - triangulate_start
+    logger.info(f"Triangulation completed in {triangulate_time:.2f} s")
+    # a = input("Press Enter to continue to bundle adjustment...")
+
+    ba_start = time.time()
+    ba_cmd = get_ba_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        input_path=distorted_sparse_path,
+        output_path=distorted_sparse_path,
+        refine_focal_length=1,
+        refine_principal_point=0,
+        refine_extra_params=1,
+        refine_rig_from_world=1,
+        refine_sensor_from_rig=1,
+        refine_points3D=1,
+        min_track_length=0,
+        max_num_iterations=100,
+        max_linear_solver_iterations=200,
+        gradient_tolerance=0.0001,
+        use_gpu=0
+    )    
+    run_subprocess(ba_cmd, logger)
+    ba_time = time.time() - ba_start
+    logger.info(f"Bundle adjustment completed in {ba_time:.2f} s")
+
+# ========================= Mapper / Bundle Adjustment =========================
 mapper_log_path = os.path.join(output_path, "mapper.log")
 logger.info("Starting mapper...")
 t2 = time.time()
 if args.mapper == "acc":
-    mapper_cmd = [
-        colmap_command, "mapper",
-        "--database_path", database_path,
-        "--image_path", images_path,
-        "--output_path", distorted_sparse_path,
-        "--Mapper.num_threads", "-1",
-        "--Mapper.min_num_matches", "15", # 15
-        "--Mapper.init_num_trials", "1000", # 200
-        "--Mapper.init_min_num_inliers", "200", # 100
-        "--Mapper.init_max_error", "4", # 4
-        "--Mapper.init_min_tri_angle", "16", # 16
-        "--Mapper.ba_local_min_tri_angle", "6", # 6
-        "--Mapper.ba_local_num_images", "6", # 6
-        "--Mapper.ba_local_max_num_iterations", "25", # 25
-        "--Mapper.ba_local_max_refinements", "2", # 2
-        "--Mapper.ba_local_max_refinement_change", "0.001", # 0.001
-        "--Mapper.ba_global_frames_ratio", "1.5", # 1.1
-        "--Mapper.ba_global_points_ratio", "1.5", # 1.1
-        "--Mapper.ba_global_frames_freq", "500", # 500
-        "--Mapper.ba_global_points_freq", "250000", # 250000
-        "--Mapper.ba_global_max_num_iterations", "50", # 50 --> 20 --> 25
-        "--Mapper.ba_global_max_refinements", "5", # 5
-        "--Mapper.ba_global_max_refinement_change", "0.0005", # 0.0005
-        "--Mapper.ba_refine_focal_length", "1", # 1
-        "--Mapper.ba_refine_principal_point", "0", # 0
-        "--Mapper.ba_refine_extra_params", "1", # 1
-        "--Mapper.ba_use_gpu", "0",  # 0
-        "--Mapper.abs_pose_max_error", "12", # 12
-        "--Mapper.abs_pose_min_num_inliers", str(min_num_inliers), # 30
-        "--Mapper.abs_pose_min_inlier_ratio", str(min_inlier_ratio), # 0.25
-        "--Mapper.max_extra_param", "1", # 1
-        "--Mapper.tri_min_angle", "1.5", # 1.5
-        "--Mapper.tri_create_max_angle_error", "2", # 2
-        "--Mapper.tri_merge_max_reproj_error", "4", # 4
-        "--Mapper.filter_max_reproj_error", "4", # 4
-        "--Mapper.max_reg_trials", "3", # 3
-        "--log_level", str(log_level),
-    ]
+    mapper_cmd = get_incremental_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        ba_local_max_num_iterations=15,
+        ba_local_max_refinements=2,
+        ba_local_max_refinement_change=0.001,
+        ba_global_max_num_iterations=25,
+        ba_global_max_refinements=2,
+        ba_global_frames_ratio=1.5,
+        ba_global_points_ratio=1.5,
+        ba_global_max_refinement_change=0.001,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
+    )
 elif args.mapper == "hierarchical":
-    mapper_cmd = [
-        colmap_command, "hierarchical_mapper",
-        "--database_path", database_path,
-        "--image_path", images_path,
-        "--output_path", distorted_sparse_path,
-        "--log_level", str(log_level),
-        "--num_workers", "-1",
-        "--image_overlap", "50", # 50
-        "--leaf_max_num_images", "500", # 500
-        "--Mapper.min_num_matches", "15",
-        "--Mapper.ignore_watermarks", "0",
-        "--Mapper.multiple_models", "1",
-        "--Mapper.max_num_models", "50",
-        "--Mapper.max_model_overlap", "20",
-        "--Mapper.min_model_size", "10",
-        "--Mapper.init_num_trials", "1000", # 200
-        "--Mapper.extract_colors", "1",
-        "--Mapper.num_threads", "-1",
-        "--Mapper.random_seed", "-1",
-        "--Mapper.min_focal_length_ratio", "0.1",
-        "--Mapper.max_focal_length_ratio", "10",
-        "--Mapper.max_extra_param", "1",
-        "--Mapper.ba_refine_focal_length", "1",
-        "--Mapper.ba_refine_principal_point", "0",
-        "--Mapper.ba_refine_extra_params", "1",
-        "--Mapper.ba_refine_sensor_from_rig", "0",
-        "--Mapper.ba_local_function_tolerance", "0",
-        "--Mapper.ba_local_max_num_iterations", "25", #25
-        "--Mapper.ba_global_frames_ratio", "1.1",
-        "--Mapper.ba_global_points_ratio", "1.1",
-        "--Mapper.ba_global_frames_freq", "500",
-        "--Mapper.ba_global_points_freq", "250000",
-        "--Mapper.ba_global_function_tolerance", "0",
-        "--Mapper.ba_global_max_num_iterations", "50", # 50
-        "--Mapper.ba_global_max_refinements", "5", # 5
-        "--Mapper.ba_global_max_refinement_change", "0.0005",
-        "--Mapper.ba_local_max_refinements", "2", # 2
-        "--Mapper.ba_local_max_refinement_change", "0.001",
-        "--Mapper.ba_use_gpu", str(use_gpu),
-        "--Mapper.ba_gpu_index", "-1",
-        "--Mapper.ba_min_num_residuals_for_cpu_multi_threading", "50000",
-        "--Mapper.snapshot_path", "",
-        "--Mapper.snapshot_frames_freq", "0",
-        "--Mapper.fix_existing_frames", "0",
-        "--Mapper.init_min_num_inliers", "100",
-        "--Mapper.init_max_error", "4",
-        "--Mapper.init_max_forward_motion", "0.95",
-        "--Mapper.init_min_tri_angle", "16",
-        "--Mapper.init_max_reg_trials", "2",
-        "--Mapper.abs_pose_max_error", "12",
-        "--Mapper.abs_pose_min_num_inliers", str(min_num_inliers),
-        "--Mapper.abs_pose_min_inlier_ratio", str(min_inlier_ratio),
-        "--Mapper.filter_max_reproj_error", "4",
-        "--Mapper.filter_min_tri_angle", "1.5",
-        "--Mapper.max_reg_trials", "3",
-        "--Mapper.ba_local_num_images", "6",
-        "--Mapper.ba_local_min_tri_angle", "6",
-        "--Mapper.ba_global_ignore_redundant_points3D", "0",
-        "--Mapper.ba_global_ignore_redundant_points3D_min_coverage_gain", "0.05",
-        "--Mapper.image_list_path", "",
-        "--Mapper.constant_rig_list_path", "",
-        "--Mapper.constant_camera_list_path", "",
-        "--Mapper.max_runtime_seconds", "-1",
-        "--Mapper.tri_max_transitivity", "1",
-        "--Mapper.tri_create_max_angle_error", "2",
-        "--Mapper.tri_continue_max_angle_error", "2",
-        "--Mapper.tri_merge_max_reproj_error", "4",
-        "--Mapper.tri_complete_max_reproj_error", "4",
-        "--Mapper.tri_complete_max_transitivity", "5",
-        "--Mapper.tri_re_max_angle_error", "5",
-        "--Mapper.tri_re_min_ratio", "0.2",
-        "--Mapper.tri_re_max_trials", "1",
-        "--Mapper.tri_min_angle", "1.5",
-        "--Mapper.tri_ignore_two_view_tracks", "1"
-    ]
-
+    mapper_cmd = get_hierarchical_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
+    )
 elif args.mapper == "hierarchical_acc":
-    mapper_cmd = [
-        colmap_command, "hierarchical_mapper",
-        "--database_path", database_path,
-        "--image_path", images_path,
-        "--output_path", distorted_sparse_path,
-        "--log_level", str(log_level),
-        "--num_workers", "-1",
-        "--image_overlap", "5", # 50
-        "--leaf_max_num_images", "50", # 500
-        "--Mapper.min_num_matches", "15",
-        "--Mapper.ignore_watermarks", "0",
-        "--Mapper.multiple_models", "1",
-        "--Mapper.max_num_models", "50",
-        "--Mapper.max_model_overlap", "20",
-        "--Mapper.min_model_size", "10",
-        "--Mapper.init_num_trials", "200",
-        "--Mapper.extract_colors", "1",
-        "--Mapper.num_threads", "-1",
-        "--Mapper.random_seed", "-1",
-        "--Mapper.min_focal_length_ratio", "0.1",
-        "--Mapper.max_focal_length_ratio", "10",
-        "--Mapper.max_extra_param", "1",
-        "--Mapper.ba_refine_focal_length", "1",
-        "--Mapper.ba_refine_principal_point", "0",
-        "--Mapper.ba_refine_extra_params", "1",
-        "--Mapper.ba_refine_sensor_from_rig", "1",
-        "--Mapper.ba_local_function_tolerance", "0",
-        "--Mapper.ba_local_max_num_iterations", "12", #25
-        "--Mapper.ba_global_frames_ratio", "2.0",
-        "--Mapper.ba_global_points_ratio", "2.0",
-        "--Mapper.ba_global_frames_freq", "500",
-        "--Mapper.ba_global_points_freq", "250000",
-        "--Mapper.ba_global_function_tolerance", "0",
-        "--Mapper.ba_global_max_num_iterations", "20", # 50
-        "--Mapper.ba_global_max_refinements", "2", # 5
-        "--Mapper.ba_global_max_refinement_change", "0.0005",
-        "--Mapper.ba_local_max_refinements", "2", # 2
-        "--Mapper.ba_local_max_refinement_change", "0.001",
-        "--Mapper.ba_use_gpu", "0", # 0
-        "--Mapper.ba_gpu_index", "-1",
-        "--Mapper.ba_min_num_residuals_for_cpu_multi_threading", "50000",
-        "--Mapper.snapshot_path", "",
-        "--Mapper.snapshot_frames_freq", "0",
-        "--Mapper.fix_existing_frames", "0",
-        "--Mapper.init_min_num_inliers", "100",
-        "--Mapper.init_max_error", "4",
-        "--Mapper.init_max_forward_motion", "0.95",
-        "--Mapper.init_min_tri_angle", "16",
-        "--Mapper.init_max_reg_trials", "2",
-        "--Mapper.abs_pose_max_error", "12",
-        "--Mapper.abs_pose_min_num_inliers", str(min_num_inliers),
-        "--Mapper.abs_pose_min_inlier_ratio", str(min_inlier_ratio),
-        "--Mapper.filter_max_reproj_error", "4",
-        "--Mapper.filter_min_tri_angle", "1.5",
-        "--Mapper.max_reg_trials", "3",
-        "--Mapper.ba_local_num_images", "6",
-        "--Mapper.ba_local_min_tri_angle", "6",
-        "--Mapper.ba_global_ignore_redundant_points3D", "0",
-        "--Mapper.ba_global_ignore_redundant_points3D_min_coverage_gain", "0.05",
-        "--Mapper.image_list_path", "",
-        "--Mapper.constant_rig_list_path", "",
-        "--Mapper.constant_camera_list_path", "",
-        "--Mapper.max_runtime_seconds", "-1",
-        "--Mapper.tri_max_transitivity", "1",
-        "--Mapper.tri_create_max_angle_error", "2",
-        "--Mapper.tri_continue_max_angle_error", "2",
-        "--Mapper.tri_merge_max_reproj_error", "4",
-        "--Mapper.tri_complete_max_reproj_error", "4",
-        "--Mapper.tri_complete_max_transitivity", "5",
-        "--Mapper.tri_re_max_angle_error", "5",
-        "--Mapper.tri_re_min_ratio", "0.2",
-        "--Mapper.tri_re_max_trials", "1",
-        "--Mapper.tri_min_angle", "1.5",
-        "--Mapper.tri_ignore_two_view_tracks", "1"
-    ]
-
+    mapper_cmd = get_hierarchical_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        ba_local_max_num_iterations=15,
+        ba_local_max_refinements=2,
+        ba_local_max_refinement_change=0.001,
+        ba_global_max_num_iterations=25,
+        ba_global_max_refinements=2,
+        ba_global_frames_ratio=1.5,
+        ba_global_points_ratio=1.5,
+        ba_global_max_refinement_change=0.001,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
+    )
 elif args.mapper == "global":
-    mapper_cmd = [
-        colmap_command, "global_mapper",
-        "--database_path", database_path,
-        "--image_path", images_path,
-        "--output_path", distorted_sparse_path,
-        "--GlobalMapper.image_list_path", "",
-        "--GlobalMapper.min_num_matches", str(min_num_inliers),
-        "--GlobalMapper.ignore_watermarks", "0",
-        "--GlobalMapper.num_threads", "-1",
-        "--GlobalMapper.random_seed", "-1",
-        "--GlobalMapper.decompose_relative_pose", "1",
-        "--GlobalMapper.ba_num_iterations", "3", # 3
-        "--GlobalMapper.skip_rotation_averaging", "0",
-        "--GlobalMapper.skip_track_establishment", "0",
-        "--GlobalMapper.skip_global_positioning", "0",
-        "--GlobalMapper.skip_bundle_adjustment", "0",
-        "--GlobalMapper.skip_retriangulation", "0",
-        "--GlobalMapper.track_intra_image_consistency_threshold", "10",
-        "--GlobalMapper.track_required_tracks_per_view", "2147483647",
-        "--GlobalMapper.track_min_num_views_per_track", "3",
-        "--GlobalMapper.gp_use_gpu", "0", # 1
-        "--GlobalMapper.gp_gpu_index", "-1",
-        "--GlobalMapper.gp_optimize_positions", "1",
-        "--GlobalMapper.gp_optimize_points", "1",
-        "--GlobalMapper.gp_optimize_scales", "1",
-        "--GlobalMapper.gp_loss_function_scale", "0.1",
-        "--GlobalMapper.gp_max_num_iterations", "100", # 100
-        "--GlobalMapper.ba_refine_focal_length", "1",
-        "--GlobalMapper.ba_refine_principal_point", "0",
-        "--GlobalMapper.ba_refine_extra_params", "1",
-        "--GlobalMapper.ba_refine_sensor_from_rig", "0",
-        "--GlobalMapper.ba_refine_rig_from_world", "1",
-        "--GlobalMapper.ba_refine_points3D", "1",
-        "--GlobalMapper.ba_min_track_length", "3",
-        "--GlobalMapper.ba_ceres_use_gpu", "0", # 1
-        "--GlobalMapper.ba_ceres_gpu_index", "-1",
-        "--GlobalMapper.ba_ceres_loss_function_scale", "1",
-        "--GlobalMapper.ba_ceres_max_num_iterations", "200",
-        "--GlobalMapper.ba_skip_fixed_rotation_stage", "0",
-        "--GlobalMapper.ba_skip_joint_optimization_stage", "0",
-        "--GlobalMapper.tri_complete_max_reproj_error", "15",
-        "--GlobalMapper.tri_merge_max_reproj_error", "15",
-        "--GlobalMapper.tri_min_angle", "1", #1
-        "--GlobalMapper.ra_max_rotation_error_deg", "10",
-        "--GlobalMapper.max_angular_reproj_error_deg", "1",
-        "--GlobalMapper.max_normalized_reproj_error", "0.01",
-        "--GlobalMapper.min_tri_angle_deg", "1", #1
-    ]
-
+    mapper_cmd = get_global_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        min_num_inliers=min_num_inliers,
+        ba_num_iterations=5,
+        gp_max_num_iterations=100,
+        ba_ceres_max_num_iterations=200
+    )
+elif args.mapper == "pose_prior_global":
+    mapper_cmd = get_pose_prior_global_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        min_num_inliers=min_num_inliers,
+        ba_num_iterations=5,
+        gp_max_num_iterations=100,
+        ba_ceres_max_num_iterations=200
+    )
 elif args.mapper == "pose_prior":
-    mapper_cmd = [
-        colmap_command, "pose_prior_mapper",
-        "--log_level", "0",
-        "--log_severity", "0",
-        "--log_color", "1",
-        "--database_path", database_path,
-        "--image_path", images_path,
-        "--input_path", "",
-        "--output_path", distorted_sparse_path,
-        "--Mapper.min_num_matches", str(min_num_inliers),
-        "--Mapper.ignore_watermarks", "0",
-        "--Mapper.extract_colors", "1",
-        "--Mapper.num_threads", "-1",
-        "--Mapper.random_seed", "-1",
-        "--Mapper.ba_use_gpu", "0", # 0
-        "--Mapper.ba_gpu_index", "-1",        
-        "--Mapper.min_focal_length_ratio", "0.1",
-        "--Mapper.max_focal_length_ratio", "10",
-        "--Mapper.max_extra_param", "1",
-        "--Mapper.ba_refine_focal_length", "1",
-        "--Mapper.ba_refine_principal_point", "0",
-        "--Mapper.ba_refine_extra_params", "1",
-        "--Mapper.ba_refine_sensor_from_rig", "1",
-        "--Mapper.ba_local_function_tolerance", "0",
-        "--Mapper.ba_local_max_num_iterations", "25",
-        "--Mapper.ba_global_frames_ratio", "1.5", # 1.1
-        "--Mapper.ba_global_points_ratio", "1.5", # 1.1
-        "--Mapper.ba_global_frames_freq", "500",
-        "--Mapper.ba_global_points_freq", "250000",
-        "--Mapper.ba_global_function_tolerance", "0",
-        "--Mapper.ba_global_max_num_iterations", "25", # 50
-        "--Mapper.ba_global_max_refinements", "2", # 5
-        "--Mapper.ba_global_max_refinement_change", "0.001", # 0.0005
-        "--Mapper.ba_local_max_refinements", "2", # 2
-        "--Mapper.ba_local_max_refinement_change", "0.001", # 0.001
-        "--Mapper.ba_min_num_residuals_for_cpu_multi_threading", "50000",
-        "--Mapper.snapshot_path", "",
-        "--Mapper.snapshot_frames_freq", "0",
-        "--Mapper.fix_existing_frames", "0",
-        "--Mapper.init_min_num_inliers", "1000", # 100
-        "--Mapper.init_max_error", "4",
-        "--Mapper.init_max_forward_motion", "0.95",
-        "--Mapper.init_min_tri_angle", "16",
-        "--Mapper.init_max_reg_trials", "2",
-        "--Mapper.abs_pose_max_error", "12",
-        "--Mapper.abs_pose_min_num_inliers", str(min_num_inliers), # 30
-        "--Mapper.abs_pose_min_inlier_ratio", str(min_inlier_ratio), # 0.25
-        "--Mapper.filter_max_reproj_error", "4",
-        "--Mapper.filter_min_tri_angle", "1.5",
-        "--Mapper.max_reg_trials", "3",
-        "--Mapper.ba_local_num_images", "6", # 6
-        "--Mapper.ba_local_min_tri_angle", "6",
-        "--Mapper.ba_global_ignore_redundant_points3D", "0",
-        "--Mapper.ba_global_ignore_redundant_points3D_min_coverage_gain", "0.05",
-        "--Mapper.image_list_path", "",
-        "--Mapper.constant_rig_list_path", "",
-        "--Mapper.constant_camera_list_path", "",
-        "--Mapper.max_runtime_seconds", "-1",
-        "--Mapper.tri_max_transitivity", "1",
-        "--Mapper.tri_create_max_angle_error", "2",
-        "--Mapper.tri_continue_max_angle_error", "2",
-        "--Mapper.tri_merge_max_reproj_error", "4",
-        "--Mapper.tri_complete_max_reproj_error", "4",
-        "--Mapper.tri_complete_max_transitivity", "5",
-        "--Mapper.tri_re_max_angle_error", "5",
-        "--Mapper.tri_re_min_ratio", "0.2",
-        "--Mapper.tri_re_max_trials", "1",
-        "--Mapper.tri_min_angle", "1.5",
-        "--Mapper.tri_ignore_two_view_tracks", "1",
-        "--overwrite_priors_covariance", "0",
-        "--prior_position_std_x", "1",
-        "--prior_position_std_y", "1",
-        "--prior_position_std_z", "1",
-        "--use_robust_loss_on_prior_position", "0",
-        "--prior_position_loss_scale", "7.82",
-    ]
-
+    mapper_cmd = get_pose_prior_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        input_path="",
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio,
+        ba_local_max_num_iterations = 25,
+        ba_local_max_refinements = 2,
+        ba_local_max_refinement_change = 0.001,
+        ba_global_frames_ratio = 1.5,
+        ba_global_points_ratio = 1.5,
+        ba_global_max_num_iterations = 25,
+        ba_global_max_refinements = 2,
+        ba_global_max_refinement_change = 0.001,
+        ba_global_frames_freq = 500,
+        ba_global_points_freq = 250000,
+        min_num_inliers = 30,
+        min_inlier_ratio = 0.25,
+        overwrite_priors_covariance  = 1,
+        prior_position_std_x  = 1.0,
+        prior_position_std_y  = 1.0,
+        prior_position_std_z  = 1.0      
+    )
 else:
-    mapper_cmd = [
-        colmap_command, "mapper",
-        "--database_path", database_path,
-        "--image_path", images_path,
-        "--output_path", distorted_sparse_path,
-        "--Mapper.ba_global_function_tolerance", "0.000001",
-        "--log_level", str(log_level),
-    ]
-run_subprocess(mapper_cmd, logger)
-mapper_time = time.time() - t2
+    mapper_cmd = get_incremental_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_path,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        ba_local_max_num_iterations=25,
+        ba_local_max_refinements=2,
+        ba_local_max_refinement_change=0.001,
+        ba_global_max_num_iterations=50,
+        ba_global_max_refinements=5,
+        ba_global_frames_ratio=1.1,
+        ba_global_points_ratio=1.1,
+        ba_global_max_refinement_change=0.0005,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
+    )
+mapper_start = time.time()
+if args.refine_num > 0 or args.mapper != "pose_prior_global":
+    refine_start = time.time()
+    for it in range(0, args.refine_num):
+        logger.info(f" {it + 1} / 3 reconstruction refine")
+        run_subprocess(mapper_cmd, logger)
+    refine_time = time.time() - refine_start
+mapper_time = time.time() - mapper_start
+mapper_time += triangulate_time + ba_time + view_graph_calibrate_time
 logger.info(f"Mapper done in {mapper_time:.2f} s")
 
-# --------------------------
-# Image undistortion
-# --------------------------
+# ========================= Image undistortion ========================= 
 statr_undistort = time.time()
 largest_sparse_folder = get_largest_subfolder(distorted_sparse_path)
+if args.refine_num == 0 and args.mapper == "pose_prior_global":
+    largest_sparse_folder = distorted_sparse_path
+logger.info(f"largest_sparse_folder: {largest_sparse_folder}")
 img_undist_cmd = [
     colmap_command, "image_undistorter",
     "--image_path", images_path,
@@ -905,12 +618,9 @@ run_subprocess(img_undist_cmd, logger)
 undistort_time = time.time() - statr_undistort
 logger.info(f"Image undistortion done, used time: {undistort_time:.2f} s.")
 
-# --------------------------
-# Organize sparse output to sparse/0
-# --------------------------
+# ========================= Organize sparse output to sparse/0 =============
 sparse_output_path = os.path.join(output_path, "sparse")
 os.makedirs(os.path.join(sparse_output_path, "0"), exist_ok=True)
-
 logger.info("Organizing sparse output files into sparse/0 ...")
 for item in os.listdir(sparse_output_path):
     src_path = os.path.join(sparse_output_path, item)
@@ -925,9 +635,7 @@ for item in os.listdir(sparse_output_path):
         os.rmdir(src_path)
     elif os.path.isfile(src_path):
         shutil.move(src_path, dst_path)
-
 img_num, _ = count_images_in_dir_recursive(os.path.join(output_path, "images"))
-
 logger.info("Sparse output successfully organized into sparse/0.")
 
 # --------------------------
@@ -935,13 +643,16 @@ logger.info("Sparse output successfully organized into sparse/0.")
 # --------------------------
 total_time = time.time() - start_time
 sparse_reconstruction_time = feature_extraction_time + feature_matching_time + mapper_time
-pair_match_time = feature_matching_time / (input_img_num * (input_img_num - 1) / 2) if input_img_num > 1 else 0
+# pair_match_time = feature_matching_time / (input_img_num * (input_img_num - 1) / 2) if input_img_num > 1 else 0
 
 logger.info("Done. Timing statistics:")
 logger.info(f"  Feature extraction: {int(feature_extraction_time // 60)} min {feature_extraction_time % 60:.2f} s")
 logger.info(f"  Feature matching: {int(feature_matching_time // 60)} min {feature_matching_time % 60:.2f} s")
-logger.info(f"  Average time per image pair: {pair_match_time * 1000:.2f} ms")
-logger.info(f"  View Grpha Calibrate time: {view_graph_calibrate_time} s")
+# logger.info(f"  Average time per image pair: {pair_match_time * 1000:.2f} ms")
+logger.info(f"  View Grpha Calibrate time: {int(view_graph_calibrate_time // 60)} min {view_graph_calibrate_time % 60:.2f} s")
+logger.info(f"  Triangulation time: {int(triangulate_time // 60)} min {triangulate_time % 60:.2f} s")
+logger.info(f"  Bundle Adjustment time: {int(ba_time // 60)} min {ba_time % 60:.2f} s")
+logger.info(f"  Refine time: {int(refine_time // 60)} min {refine_time % 60:.2f} s")
 logger.info(f"  Mapper: {int(mapper_time // 60)} min {mapper_time % 60:.2f} s")
 logger.info(f"  Sparse reconstruction: {int(sparse_reconstruction_time // 60)} min {sparse_reconstruction_time % 60:.2f} s")
 logger.info(f"  Image undistortion: {int(undistort_time // 60)} min {undistort_time % 60:.2f} s")
