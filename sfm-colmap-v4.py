@@ -6,7 +6,7 @@ import shutil
 import time
 from datetime import datetime
 from mapper_cmd import get_ba_cmd, get_incremental_mapper_cmd, get_hierarchical_mapper_cmd, get_global_mapper_cmd, get_points_triangulate_cmd, get_pose_prior_global_mapper_cmd, get_pose_prior_mapper_cmd
-from utils import run_subprocess, check_operating_system, count_images_in_dir_recursive, get_largest_subfolder, clear_folder
+from utils import run_subprocess, check_operating_system, count_images_in_dir_recursive, get_largest_subfolder, get_subfolders_names, clear_folder
 from database import ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
 
@@ -170,23 +170,20 @@ distorted_sparse_path = os.path.join(output_path, "distorted/sparse")
 os.makedirs(distorted_sparse_path, exist_ok=True)
 
 database_path = os.path.join(output_path, "distorted/database.db")
-images_path = os.path.join(args.source_path, "input")
+images_dir = os.path.join(args.source_path, "input")
 matched_images_pairs_path = os.path.join(distorted_sparse_path, "image_pairs.txt")
 
-input_img_num, image_files = count_images_in_dir_recursive(images_path)
+input_img_num, images_full_path = count_images_in_dir_recursive(images_dir)
 logger.info(f"input images num: {input_img_num}")
 image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-image_files = sorted([
-    f for f in os.listdir(images_path)
-    if os.path.splitext(f)[1].lower() in image_extensions
-])
-
-logger.info(f"Found {len(image_files)} images")
-
+images_full_path = sorted(images_full_path)
+logger.info(f"Found {len(images_full_path)} images")
+# print(f"First 5 images: {images_full_path[:5]}")
 # ======================== GPU setup ==========================================
 use_gpu = 0 if args.no_gpu else 1
 
 # ============================ find matched pairs using slam pose (optional) ==========
+prior_focal_length = None
 if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
     logger.info(f"Finding image pairs based on AR poses from: {args.ar_pose_path}")
     # pcd=load_point_cloud(os.path.join(args.ar_pose_path, "scan_all_pointcloud.ply"))
@@ -205,8 +202,8 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
 
     if not os.path.isabs(args.ar_pose_path):
         args.ar_pose_path = os.path.join(args.source_path, args.ar_pose_path)
-    compute_matched_image_pairs_by_pose_prior(args.ar_pose_path, matched_images_pairs_path, overlap_thresh=0.5)
-    logger.info(f"AR pose-based image pairs saved to: {matched_images_pairs_path}")
+    prior_focal_length = compute_matched_image_pairs_by_pose_prior(args.ar_pose_path, matched_images_pairs_path, overlap_thresh=0.5)
+    logger.info(f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}")
 
 # ========================= Feature extraction ==================================
 
@@ -221,8 +218,11 @@ if args.external_splg:
     splg_start = time.time()    
     db_init_success = initialize_colmap_database(
         database_path=database_path,
-        images_path=images_path,
+        images_dir= images_dir,
+        images_path=images_full_path,
         camera_model=args.camera,
+        prior_fx=prior_focal_length,
+        prior_fy=prior_focal_length,
         logger=logger
     )    
     if not db_init_success:
@@ -234,10 +234,11 @@ if args.external_splg:
         args.feature_type = "aliked"
     # Now run SuperPoint feature extraction    
     image_features, image_id_map, feat_ext_time = extract_neural_features(
-        args.feature_type,
-        current_path,
-        database_path, 
-        images_path, 
+        feature_type=args.feature_type,
+        local_weights_root=current_path,
+        database_path=database_path,
+        images_dir=images_dir,
+        images_path=images_full_path,
         max_num_keypoints=args.max_feature_num,
         logger=logger
     )
@@ -289,7 +290,7 @@ else:
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         feature_type=args.feature_type,
         single_camera_per_image=int(args.single_image),
         single_camera_per_fold=int(args.single_fold),
@@ -329,12 +330,9 @@ else:
         # Generate sequential match list with circular overlap
         logger.info("Generating sequential match pairs...")
         
-        # Get image names from image_files
-        image_names = [os.path.basename(f) for f in image_files]
-
         # Generate match pairs and save to file
         match_pairs = generate_sequential_match_list(
-            image_names=image_names,
+            image_names=images_full_path,
             overlap=args.sequential_overlap,
             output_file=matched_images_pairs_path,
             logger=logger
@@ -408,7 +406,7 @@ if args.visualize_matches:
         vis_dir = os.path.join(output_path, 'visualization')
         os.makedirs(vis_dir, exist_ok=True)
         print("vis_dir: ", vis_dir)
-        visualize_image_pairs(view_graph, images, images_path, vis_dir, num_pairs=100)
+        visualize_image_pairs(view_graph, images, images_dir, vis_dir, num_pairs=100)
         print("Visualization completed.")
 
 
@@ -424,23 +422,28 @@ if args.filt_match:
     logger.info(f"Filtering done. removed pairs: {filted_paris_num}")
 
 # ========================= Points triangulation with pose prior (optional) =========================
-if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
+if args.ar_pose_path is not None and len(args.ar_pose_path) and args.mapper == "pose_prior_global":
     logger.info("Using ar-based mapper...")
 
     triangulate_cmd = get_points_triangulate_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         ar_pose_path=args.ar_pose_path,
-        min_num_inliers=min_num_inliers
+        min_num_inliers=min_num_inliers,
+        tri_create_max_angle_error = 4.0, # 2.0
+        tri_continue_max_angle_error = 4.0, # 2.0
+        tri_merge_max_reproj_error = 8.0, # 4.0
+        tri_complete_max_reproj_error = 8.0, # 4.0
+        tri_complete_max_transitivity = 10, # 5
+        tri_re_max_angle_error = 8.0 # 5       
     )
     triangulate_start = time.time()
     run_subprocess(triangulate_cmd, logger)
     triangulate_time = time.time() - triangulate_start
     logger.info(f"Triangulation completed in {triangulate_time:.2f} s")
-    # a = input("Press Enter to continue to bundle adjustment...")
 
     ba_start = time.time()
     ba_cmd = get_ba_cmd(
@@ -461,9 +464,12 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
         use_gpu=0
     )    
     run_subprocess(ba_cmd, logger)
+
+    # run_subprocess(retriangulate_cmd, logger)
+    # run_subprocess(ba_cmd, logger)
+
     ba_time = time.time() - ba_start
     logger.info(f"Bundle adjustment completed in {ba_time:.2f} s")
-
 # ========================= Mapper / Bundle Adjustment =========================
 mapper_log_path = os.path.join(output_path, "mapper.log")
 logger.info("Starting mapper...")
@@ -473,7 +479,7 @@ if args.mapper == "acc":
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         ba_local_max_num_iterations=15,
@@ -492,7 +498,7 @@ elif args.mapper == "hierarchical":
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         abs_pose_min_num_inliers=min_num_inliers,
@@ -503,7 +509,7 @@ elif args.mapper == "hierarchical_acc":
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         ba_local_max_num_iterations=15,
@@ -522,7 +528,7 @@ elif args.mapper == "global":
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         min_num_inliers=min_num_inliers,
@@ -535,7 +541,7 @@ elif args.mapper == "pose_prior_global":
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         min_num_inliers=min_num_inliers,
@@ -549,7 +555,7 @@ elif args.mapper == "pose_prior":
         log_level=log_level,
         database_path=database_path,
         input_path="",
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         abs_pose_min_num_inliers=min_num_inliers,
@@ -576,7 +582,7 @@ else:
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
-        images_path=images_path,
+        images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
         ba_local_max_num_iterations=25,
@@ -591,25 +597,32 @@ else:
         abs_pose_min_inlier_ratio=min_inlier_ratio
     )
 mapper_start = time.time()
-if args.refine_num > 0 or args.mapper != "pose_prior_global":
-    refine_start = time.time()
-    for it in range(0, args.refine_num):
-        logger.info(f" {it + 1} / 3 reconstruction refine")
-        run_subprocess(mapper_cmd, logger)
-    refine_time = time.time() - refine_start
+if args.mapper != "pose_prior_global":
+    run_subprocess(mapper_cmd, logger)
+else:
+    if args.refine_num > 0:
+        refine_start = time.time()
+        for it in range(0, args.refine_num):
+            logger.info(f" {it + 1} / 3 reconstruction refine")
+            run_subprocess(mapper_cmd, logger)
+        refine_time = time.time() - refine_start        
 mapper_time = time.time() - mapper_start
 mapper_time += triangulate_time + ba_time + view_graph_calibrate_time
 logger.info(f"Mapper done in {mapper_time:.2f} s")
 
 # ========================= Image undistortion ========================= 
 statr_undistort = time.time()
+input_subdirs = get_subfolders_names(images_dir)
+for subdir in input_subdirs:
+    output_subdir_path = os.path.join(output_path, "images", subdir)
+    os.makedirs(output_subdir_path, exist_ok=True)
 largest_sparse_folder = get_largest_subfolder(distorted_sparse_path)
 if args.refine_num == 0 and args.mapper == "pose_prior_global":
     largest_sparse_folder = distorted_sparse_path
 logger.info(f"largest_sparse_folder: {largest_sparse_folder}")
 img_undist_cmd = [
     colmap_command, "image_undistorter",
-    "--image_path", images_path,
+    "--image_path", images_dir,
     "--input_path", largest_sparse_folder,
     "--output_path", output_path,
     "--output_type", "COLMAP"

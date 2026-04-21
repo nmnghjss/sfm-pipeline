@@ -390,8 +390,11 @@ def ReadColmapDatabase(path):
 
 def initialize_colmap_database(
     database_path: str,
+    images_dir: str,
     images_path: str,
     camera_model: str = "OPENCV",
+    prior_fx = None,
+    prior_fy = None,
     logger: logging.Logger = None
 ) -> bool:
     """
@@ -420,11 +423,8 @@ def initialize_colmap_database(
         db.create_tables()
         
         # Get image list
-        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-        image_files = sorted([
-            f for f in os.listdir(images_path)
-            if os.path.splitext(f)[1].lower() in image_extensions
-        ])
+        # image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        image_files = sorted(images_path)
         
         if not image_files:
             logger.error(f"No images found in {images_path}")
@@ -435,7 +435,7 @@ def initialize_colmap_database(
         
         # Add single camera to database (using first image dimensions)
         # Use PIL to read image dimensions only (more efficient and handles non-ASCII paths)
-        first_image_path = os.path.join(images_path, image_files[0])
+        first_image_path = images_path[0]
         try:
             from PIL import Image
             img = Image.open(first_image_path)
@@ -468,45 +468,51 @@ def initialize_colmap_database(
             logger.warning(f"Unknown camera model '{camera_model}', defaulting to OPENCV")
             camera_model_id = 4
 
+
+        fx = prior_fx if prior_fx is not None else max(width, height)
+        fy = prior_fy if prior_fy is not None else  max(width, height)
+        cx = width / 2
+        cy = height / 2
+
         if camera_model_id == 0:
             # SIMPLE_PINHOLE: f, cx, cy
-            camera_params = [max(width, height), width / 2, height / 2]
+            camera_params = [max(fx, fy), cx, cy]
         elif camera_model_id == 1:
             # PINHOLE: fx, fy, cx, cy
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2]
+            camera_params = [fx, fy, cx, cy]
         elif camera_model_id == 2:
             # SIMPLE_RADIAL: f, cx, cy, k
-            camera_params = [max(width, height), width / 2, height / 2, 0.0]
+            camera_params = [max(fx, fy), cx, cy, 0.0]
         elif camera_model_id == 3:
             # RADIAL: f, cx, cy, k1, k2
-            camera_params = [max(width, height), width / 2, height / 2, 0.0, 0.0]
+            camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
         elif camera_model_id == 4:
             # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0]
+            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
         elif camera_model_id == 5:
             # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0]
+            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
         elif camera_model_id == 6:
             # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         elif camera_model_id == 7:
             # FOV: fx, fy, cx, cy, omega
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0]
+            camera_params = [fx, fy, cx, cy, 0.0]
         elif camera_model_id == 8:
             # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
-            camera_params = [max(width, height), width / 2, height / 2, 0.0]
+            camera_params = [max(fx, fy), cx, cy, 0.0]
         elif camera_model_id == 9:
             # RADIAL_FISHEYE: f, cx, cy, k1, k2
-            camera_params = [max(width, height), width / 2, height / 2, 0.0, 0.0]
+            camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
         elif camera_model_id == 10:
             # THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1";
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         elif camera_model_id == 11:
             # RAD_TAN_THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3"
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
         else:
             logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
-            camera_params = [max(width, height), max(width, height), width / 2, height / 2, 0.0, 0.0, 0.0, 0.0]
+            camera_params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
             camera_model_id = 4  # OPENCV
         
         camera_id = db.add_camera(
@@ -522,9 +528,10 @@ def initialize_colmap_database(
         # Add images to database
         image_count = 0
         for image_idx, image_file in enumerate(image_files):
+            img_rel_path = os.path.relpath(image_file, images_dir)
             try:
                 image_id = db.add_image(
-                    name=image_file,
+                    name=img_rel_path,
                     camera_id=camera_id
                 )
                 image_count += 1

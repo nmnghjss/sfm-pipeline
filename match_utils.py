@@ -321,7 +321,7 @@ def load_image_pairs(pairs_txt, unique=True):
     print(f"[INFO] Loaded {len(pairs)} image pairs")
     return pairs
 
-def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=0.2, overlap_thresh=0.4):
+def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=0.1, overlap_thresh=0.4):
 
     # 读取 COLMAP 数据
     cameras, poses, points3D = read_model(pose_prior_path)
@@ -345,3 +345,5 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
                     pairs.append((pose_i.name, pose_j.name))
                     f.write(f"{pose_i.name} {pose_j.name}\n")
     print(f"[INFO] Matched image pairs computed and saved to {output_txt}, total pairs: {len(pairs)}")
+
+    return cameras[1].params[0]

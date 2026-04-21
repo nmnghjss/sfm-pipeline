@@ -154,6 +154,17 @@ def get_subfolders(parent_dir: str) -> list:
             subfolders.append(sub_path)
     return subfolders
 
+def get_subfolders_names(parent_dir: str) -> list:
+    """Return a list of subfolder names in the given parent directory."""
+    if not os.path.isdir(parent_dir):
+        raise ValueError(f"Path not found or not a directory: {parent_dir}")
+    subfolders = []
+    for name in os.listdir(parent_dir):
+        sub_path = os.path.join(parent_dir, name)
+        if os.path.isdir(sub_path):
+            subfolders.append(name)
+    return subfolders
+
 
 def get_largest_subfolder(parent_dir: str) -> Optional[str]:
     """Return the subfolder with the largest total file size."""

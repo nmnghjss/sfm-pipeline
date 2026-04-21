@@ -67,6 +67,7 @@ def extract_neural_features(
     feature_type: str,
     local_weights_root: str,
     database_path: str,
+    images_dir: str,
     images_path: str,
     max_num_keypoints: int = 2048,
     logger: logging.Logger = None
@@ -103,11 +104,7 @@ def extract_neural_features(
         extractor = DISK(max_num_keypoints=max_num_keypoints).eval().to(device)
 
     # Get list of images
-    image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-    image_files = sorted([
-        f for f in os.listdir(images_path)
-        if os.path.splitext(f)[1].lower() in image_extensions
-    ])
+    image_files = sorted(images_path)
     
     if not image_files:
         logger.error(f"No images found in {images_path}")
@@ -136,8 +133,7 @@ def extract_neural_features(
     keypoints_to_write = []
     extraction_log = []
     
-    for idx, img_file in enumerate(image_files):
-        img_path = os.path.join(images_path, img_file)
+    for idx, img_path in enumerate(image_files):
         
         # Log memory status before processing each image (for GPU debugging)
         if device == 'cuda':
@@ -151,7 +147,7 @@ def extract_neural_features(
         
         try:
             # Load image
-            logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_file}")
+            logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_path}")
             img_tensor = load_image_use_torchvision(img_path, None, logger)
             # img_u8 = load_image_use_PIL(img_path, None, logger)
             # logger.info("to cp data to gpu")
@@ -176,13 +172,14 @@ def extract_neural_features(
             
             # Get image ID from database
             # logger.info("to fetch image id in database ")
-            cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_file,))
+            img_rel_path = os.path.relpath(img_path, images_dir)
+            cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_rel_path,))
             result = cursor.fetchone()
             
             if result is None:
-                logger.warning(f"Image {img_file} not found in database, skipping feature write")
-                image_features[img_file] = feats
-                image_id_map[img_file] = None
+                logger.warning(f"Image {img_rel_path} not found in database, skipping feature write")
+                image_features[img_rel_path] = feats
+                image_id_map[img_rel_path] = None
                 # Clear GPU memory
                 del img_tensor
                 if device == 'cuda':
@@ -190,8 +187,8 @@ def extract_neural_features(
                 continue
             
             image_id = result[0]
-            image_features[img_file] = feats
-            image_id_map[img_file] = image_id
+            image_features[img_rel_path] = feats
+            image_id_map[img_rel_path] = image_id
             
             # Extract keypoints and descriptors (remove batch dimension)
             keypoints_batch = feats['keypoints']
@@ -218,9 +215,9 @@ def extract_neural_features(
             
             # Buffer keypoints for batch write
             keypoints_to_write.append((image_id, keypoints, descriptors))
-            extraction_log.append((idx, img_file, num_kpts, image_id))
+            extraction_log.append((idx, img_rel_path, num_kpts, image_id))
 
-            logger.info(f"{idx+1}/{len(image_files)} {img_file}: image_id = {image_id}, keypoints_num = {num_kpts}")
+            logger.info(f"{idx+1}/{len(image_files)} {img_rel_path}: image_id = {image_id}, keypoints_num = {num_kpts}")
             
             # Clear GPU memory after each image
             del img_tensor, feats
@@ -228,8 +225,8 @@ def extract_neural_features(
                 torch.cuda.empty_cache()
             
         except Exception as e:
-            logger.warning(f"Failed to extract features from {img_file}: {e}", exc_info=True)
-            image_features[img_file] = None
+            logger.warning(f"Failed to extract features from {img_path}: {e}", exc_info=True)
+            image_features[img_rel_path] = None
             # Ensure cleanup on error
             try:
                 del img_tensor
