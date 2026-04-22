@@ -23,6 +23,7 @@ CREATE_DESCRIPTORS_TABLE = """CREATE TABLE IF NOT EXISTS descriptors (
     rows INTEGER NOT NULL,
     cols INTEGER NOT NULL,
     data BLOB,
+    type INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE)"""
 
 CREATE_IMAGES_TABLE = """CREATE TABLE IF NOT EXISTS images (
@@ -112,6 +113,30 @@ def blob_to_array(blob, dtype, shape=(-1,)):
     else:
         return np.frombuffer(blob, dtype=dtype).reshape(*shape)
 
+def float_descriptors_to_uint8(descriptors: np.ndarray, descriptor_type: int) -> np.ndarray:
+    """
+    将float32描述子转换为uint8（对齐C++ FeatureDescriptors::FromFloat）
+    
+    Args:
+        descriptors: np.ndarray, shape=(N, D), dtype=float32
+        descriptor_type: int, 1=SIFT, 2=ALIKED_N16ROT, 3=ALIKED_N32
+        
+    Returns:
+        np.ndarray, dtype=uint8
+    """
+    # 确保输入是连续内存的float32
+    data = np.ascontiguousarray(descriptors, dtype=np.float32)
+    
+    if descriptor_type == 1:  # SIFT: 数值转换
+        return data.astype(np.uint8)
+    
+    elif descriptor_type in (2, 3):  # ALIKED: 内存重解释
+        rows, cols = data.shape
+        return data.view(np.uint8).reshape(rows, cols * 4)
+    else:
+        raise ValueError(f"Unsupported descriptor type: {descriptor_type}")
+
+
 class COLMAPDatabase(sqlite3.Connection):
 
     @staticmethod
@@ -163,11 +188,25 @@ class COLMAPDatabase(sqlite3.Connection):
             "INSERT INTO keypoints VALUES (?, ?, ?, ?)",
             (image_id,) + keypoints.shape + (array_to_blob(keypoints),))
 
-    def add_descriptors(self, image_id, descriptors):
-        descriptors = np.ascontiguousarray(descriptors, np.uint8)
+    # def add_descriptors(self, image_id, descriptors):
+    #     descriptors = np.ascontiguousarray(descriptors, np.uint8)
+    #     self.execute(
+    #         "INSERT INTO descriptors VALUES (?, ?, ?, ?)",
+    #         (image_id,) + descriptors.shape + (array_to_blob(descriptors),))
+
+    def add_descriptors(self, image_id, descriptors, descriptor_type = 1):
+        descriptors_u8 = float_descriptors_to_uint8(descriptors, descriptor_type)
+        descriptors_blob = descriptors_u8.tobytes()        
         self.execute(
-            "INSERT INTO descriptors VALUES (?, ?, ?, ?)",
-            (image_id,) + descriptors.shape + (array_to_blob(descriptors),))
+            "INSERT INTO descriptors VALUES (?, ?, ?, ?, ?)",
+            (
+                image_id,                
+                descriptors_u8.shape[0],  # rows
+                descriptors_u8.shape[1] ,  # cols
+                descriptors_blob,      # binary data
+                int(descriptor_type)  # 描述子类型
+            )
+        )
 
     def add_matches(self, image_id1, image_id2, matches):
         assert(len(matches.shape) == 2)
@@ -416,7 +455,7 @@ def initialize_colmap_database(
         logger = logging.getLogger()
     
     try:
-        logger.info("Initializing COLMAP database without SIFT extraction...")
+        logger.info("Initializing COLMAP database without feature extraction...")
         
         # Create/connect to database
         db = COLMAPDatabase.connect(database_path)
@@ -529,6 +568,7 @@ def initialize_colmap_database(
         image_count = 0
         for image_idx, image_file in enumerate(image_files):
             img_rel_path = os.path.relpath(image_file, images_dir)
+            logger.debug(f"Adding image {img_rel_path} with camera_id {camera_id}")
             try:
                 image_id = db.add_image(
                     name=img_rel_path,
@@ -729,7 +769,7 @@ def write_keypoints_to_database(db, image_id: int, keypoints: np.ndarray, descri
         logger.warning(f"Failed to write features to database for image {image_id}: {e}")
 
 
-def batch_write_keypoints_to_database(db, keypoints_list: list, logger=None):
+def batch_write_keypoints_to_database(db, keypoints_list: list, feature_type: int = 0, logger=None):
     """
     Batch write multiple images' keypoints and descriptors to COLMAP database in a single transaction.
     This is much faster than writing keypoints one by one.
@@ -769,7 +809,7 @@ def batch_write_keypoints_to_database(db, keypoints_list: list, logger=None):
         # Add all new keypoints and descriptors (use database methods which handle encoding)
         for image_id, keypoints, descriptors in processed_keypoints:
             db.add_keypoints(image_id, keypoints)
-            db.add_descriptors(image_id, descriptors)
+            db.add_descriptors(image_id, descriptors, feature_type)
         
         # Commit once for all operations
         cursor.execute("COMMIT")

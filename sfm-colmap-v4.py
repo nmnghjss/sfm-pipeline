@@ -45,7 +45,8 @@ parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help=
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
-parser.add_argument("--external_splg", action="store_true", help="Whether to use external SuperPoint + LightGlue for feature extraction and matching instead of COLMAP's built-in methods")
+parser.add_argument("--external_feature", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
+parser.add_argument("--external_match", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
@@ -206,9 +207,9 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
     logger.info(f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}")
 
 # ========================= Feature extraction ==================================
-
-if args.external_splg:
-    logger.info("Using SuperPoint + LightGlue for feature extraction and matching...")
+image_features = None
+if args.external_feature:
+    logger.info("Using external feature extraction...")
     logger.info(f"  Match strategy: {args.match_strategy}")
     if args.match_strategy in ["nearest_k", "quick"]:
         logger.info(f"  Max matches per image: {args.max_matches_per_image}")
@@ -229,9 +230,6 @@ if args.external_splg:
         logger.error("Failed to initialize database!")
         sys.exit(1)
     
-    if args.feature_type.lower().startswith("aliked"):
-        logger.info(f"Using {args.feature_type} features for extraction and matching")
-        args.feature_type = "aliked"
     # Now run SuperPoint feature extraction    
     image_features, image_id_map, feat_ext_time = extract_neural_features(
         feature_type=args.feature_type,
@@ -243,49 +241,10 @@ if args.external_splg:
         logger=logger
     )
     feature_extraction_time = time.time() - splg_start
-    logger.info(f"SuperPoint feature extraction time: {feature_extraction_time:.2f} s (including database writes)")
+    logger.info(f"external feature extraction time: {feature_extraction_time:.2f} s (including database writes)")
     
-    # Run LightGlue feature matching
-    args.match_strategy = "threshold"
-    match_start = time.time()
-    feat_match_time = match_features_with_lightglue(
-        current_path,
-        args.feature_type,
-        database_path,
-        image_features,
-        image_id_map,
-        match_list_path=matched_images_pairs_path,
-        match_strategy=args.match_strategy,
-        max_matches_per_image=args.max_matches_per_image,
-        min_matches_per_image=args.min_matches_per_image,
-        similarity_threshold=args.similarity_threshold,
-        logger=logger
-    )
-
-    # --- Import matches using COLMAP matches_importer ---
-    logger.info("Importing matches into COLMAP database using matches_importer...")
-    logger.info(f"Match list path: {matched_images_pairs_path}")
-    logger.info(f"Database path: {database_path}")
-    matches_importer_cmd = get_matches_importer_cmd(
-        colmap_command=colmap_command,
-        log_level = log_level, 
-        database_path=database_path,
-        matched_images_pairs_path=matched_images_pairs_path,
-        feature_match_type = "SIFT_BRUTEFORCE", 
-        use_gpu = 1,
-        max_feature_num = 2048,
-        min_num_inliers = 30,
-        min_inlier_ratio = 0.1,                             
-        sift_lightglue_match_path = sift_lightglue_match_path,
-        bruteforce_match_path = bruteforce_match_path,
-        aliked_lightglue_match_path = aliked_lightglue_match_path
-    )
-    run_subprocess(matches_importer_cmd, logger)
-    feature_matching_time = time.time() - match_start
-    logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
-
 else:
-    logger.info("Using COLMAP for feature extraction and matching...")
+    logger.info("Using COLMAP for feature extraction ")
     feat_extraction_cmd = get_feature_extractor_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -309,9 +268,53 @@ else:
     feature_extraction_time = time.time() - t0
     logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 
-    # ========================= Feature matching ========================= 
-    logger.info("Starting feature matching...")
-    t1 = time.time()
+# ========================= Feature matching ========================= 
+logger.info("Starting feature matching...")
+if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
+    # Run LightGlue feature matching
+    # args.match_strategy = "threshold"
+    feature_type = "aliked" if args.feature_type.lower().startswith("aliked") else args.feature_type
+    logger.info(f"Using {feature_type} features for matching")
+   
+    match_start = time.time()
+    feat_match_time = match_features_with_lightglue(
+        current_path,
+        feature_type,
+        database_path,
+        image_features,
+        image_id_map,
+        match_list_path=matched_images_pairs_path,
+        match_strategy=args.match_strategy,
+        max_matches_per_image=args.max_matches_per_image,
+        min_matches_per_image=args.min_matches_per_image,
+        similarity_threshold=args.similarity_threshold,
+        logger=logger
+    )
+
+    # --- Import matches using COLMAP matches_importer ---
+    logger.info("Importing matches into COLMAP database using matches_importer...")
+    logger.info(f"Match list path: {matched_images_pairs_path}")
+    logger.info(f"Database path: {database_path}")
+    matches_importer_cmd = get_matches_importer_cmd(
+        colmap_command=colmap_command,
+        log_level = log_level, 
+        database_path=database_path,
+        matched_images_pairs_path=matched_images_pairs_path,
+        feature_match_type = feature_match_type, 
+        use_gpu = 1,
+        max_feature_num = 2048,
+        min_num_inliers = 30,
+        min_inlier_ratio = 0.1,                             
+        sift_lightglue_match_path = sift_lightglue_match_path,
+        bruteforce_match_path = bruteforce_match_path,
+        aliked_lightglue_match_path = aliked_lightglue_match_path
+    )
+    run_subprocess(matches_importer_cmd, logger)
+    feature_matching_time = time.time() - match_start
+    logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
+
+else:    
+    match_start = time.time()
     if args.match_strategy == "exhaustive":
         feat_matching_cmd = get_exhaustive_matcher_cmd(
             colmap_command=colmap_command,
@@ -373,7 +376,7 @@ else:
             vocab_path=vocab_path
         )
     run_subprocess(feat_matching_cmd, logger)
-    feature_matching_time = time.time() - t1
+    feature_matching_time = time.time() - match_start
     logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
 # ========================= Calibrate view graph ========================= 

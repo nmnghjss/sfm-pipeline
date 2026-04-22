@@ -241,8 +241,10 @@ def extract_neural_features(
     
     # Batch write all keypoints and descriptors to database (optimized - single transaction)
     logger.info(f"Writing {len(keypoints_to_write)} images' keypoints to database in batch mode...")
+    feature_type_int =  {"SIFT": 1, "ALIKED_N16ROT": 2, "ALIKED_N32": 3, "SUPERPOINT": 4}.get(feature_type.upper(), 0)
+    logger.info(f"Feature type: {feature_type}, feature_type_int: {feature_type_int}")
     write_start = time.time()
-    written_images = batch_write_keypoints_to_database(db, keypoints_to_write, logger)
+    written_images = batch_write_keypoints_to_database(db, keypoints_to_write, feature_type=feature_type_int, logger=logger)
     write_time = time.time() - write_start
     logger.info(f"Batch keypoints write completed in {write_time:.2f}s ({written_images} images written)")
     
