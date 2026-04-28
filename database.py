@@ -108,10 +108,11 @@ def array_to_blob(array):
 
 
 def blob_to_array(blob, dtype, shape=(-1,)):
-    if IS_PYTHON3:
-        return np.fromstring(blob, dtype=dtype).reshape(*shape)
-    else:
-        return np.frombuffer(blob, dtype=dtype).reshape(*shape)
+    # if IS_PYTHON3:
+    #     return np.fromstring(blob, dtype=dtype).reshape(*shape)
+    # else:
+    #     return np.frombuffer(blob, dtype=dtype).reshape(*shape)
+    return np.frombuffer(blob, dtype=dtype).reshape(*shape)
 
 def float_descriptors_to_uint8(descriptors: np.ndarray, descriptor_type: int) -> np.ndarray:
     """
@@ -356,12 +357,19 @@ def ReadColmapDatabase(path):
             invalid_count += 1
             continue
 
-        F = blob_to_array(F_blob, np.float64).reshape(3, 3)
-        E = blob_to_array(E_blob, np.float64).reshape(3, 3)
-        H = blob_to_array(H_blob, np.float64).reshape(3, 3)
-        image_pairs[pair_key].F = F
-        image_pairs[pair_key].E = E
-        image_pairs[pair_key].H = H
+        if E_blob is not None:
+            image_pairs[pair_key].E = blob_to_array(E_blob, np.float64).reshape(3, 3)
+        else:
+            print(f"Warning: pair {name1} - {name2}: Essential matrix is None, marking this pair as invalid.")
+        if F_blob is not None:
+            image_pairs[pair_key].F = blob_to_array(F_blob, np.float64).reshape(3, 3)
+        else:
+            print(f"Warning: pair {name1} - {name2}: Fundamental matrix is None, marking this pair as invalid.")
+        if H_blob is not None:
+            image_pairs[pair_key].H = blob_to_array(H_blob, np.float64).reshape(3, 3)
+        else:
+            print(f"Warning: pair {name1} - {name2}: Homography matrix is None, marking this pair as invalid.")
+            
         image_pairs[pair_key].config = config
 
     view_graph.image_pairs = {pair_key: image_pair for pair_key, image_pair in image_pairs.items() if image_pair.is_valid}
@@ -661,14 +669,16 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
         
         if verified_match_data is None:
             # 没有验证的几何数据，保留但记录警告
-            logger.warning(f"Pair {name1} - {name2}: No verified geometry data found, keeping it")
-            kept_count += 1
+            logger.warning(f"Pair {name1} - {name2}: No verified geometry data found, removing it")
+            db.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
+            # kept_count += 1
             continue
         
         try:
             # 解析匹配数据
             init_match = blob_to_array(init_match_data, np.uint32, (-1, 2)) if init_match_data is not None else np.array([])
             verified_match = blob_to_array(verified_match_data, np.uint32, (-1, 2))
+            # logger.debug(f"init_match shape: {init_match.shape}, verified_match shape: {verified_match.shape}")
             
             num_init = len(init_match)
             num_verified = len(verified_match)
@@ -680,13 +690,9 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
             should_remove = False
             reason = []
             
-            if num_verified < min_num_inliers:
+            if num_verified < min_num_inliers or inlier_ratio < min_inlier_ratio:
                 should_remove = True
-                reason.append(f"inliers={num_verified}<{min_num_inliers}")
-            
-            if inlier_ratio < min_inlier_ratio:
-                should_remove = True
-                reason.append(f"ratio={inlier_ratio:.4f}<{min_inlier_ratio}")
+                reason.append(f"inliers={num_verified}<{min_num_inliers}, ratio={inlier_ratio:.4f}<{min_inlier_ratio}")
             
             if should_remove:
                 # 删除这对匹配
@@ -717,17 +723,6 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
     elapsed_time = time.time() - start_time
     logger.info(f"Database filtering completed in {elapsed_time:.2f}s")
     logger.info(f"Summary: Removed {removed_count} pairs, Kept {kept_count} pairs")
-    
-    if removed_count > 0:
-        logger.info("Top problematic pairs removed:")
-        for i, pair_info in enumerate(problematic_pairs[:10]):  # 显示前10个
-            logger.info(f"  {i+1}. {pair_info['pair']}: "
-                       f"init={pair_info['init_matches']}, "
-                       f"verified={pair_info['verified_matches']}, "
-                       f"ratio={pair_info['inlier_ratio']:.4f} "
-                       f"({pair_info['reason']})")
-        if len(problematic_pairs) > 10:
-            logger.info(f"  ... and {len(problematic_pairs)-10} more pairs")
     
     return removed_count
 

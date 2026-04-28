@@ -311,40 +311,40 @@ def find_similar_images_parallel(image_features, max_num=30, min_num=20, thresho
         return []
     
     # 创建描述符矩阵
-    print(f"Creating descriptor tensor from {len(valid_images)} images")
+    logger.info(f"Creating descriptor tensor from {len(valid_images)} images")
     descriptors_list = [desc_means[name].unsqueeze(0) if desc_means[name].dim() == 1 else desc_means[name] 
                        for name in valid_images]
     
     descriptors_tensor = torch.cat(descriptors_list, dim=0)  # (m, 256)
-    print(f"descriptors_tensor shape after cat: {descriptors_tensor.shape}")
+    logger.info(f"descriptors_tensor shape after cat: {descriptors_tensor.shape}")
     
     # 计算相似度矩阵（使用归一化向量的矩阵乘法）
     # 确保 descriptors_tensor 是 (m, 256)
     if descriptors_tensor.dim() != 2:
         descriptors_tensor = descriptors_tensor.reshape(-1, descriptors_tensor.shape[-1])
     
-    print(f"descriptors_tensor shape before norm: {descriptors_tensor.shape}")
+    logger.info(f"descriptors_tensor shape before norm: {descriptors_tensor.shape}")
     norm_descs = torch.nn.functional.normalize(descriptors_tensor, p=2, dim=1)  # (m, 256)
-    print(f"norm_descs shape: {norm_descs.shape}")
+    logger.info(f"norm_descs shape: {norm_descs.shape}")
     similarity_matrix = norm_descs @ norm_descs.t()  # (m, m) - cosine similarity
-    print(f"similarity_matrix shape: {similarity_matrix.shape}")
+    logger.info(f"similarity_matrix shape: {similarity_matrix.shape}")
     
     # 为每张图找到最相似的K张或基于阈值找相似图
     match_pairs = []
     
     if threshold is not None:
         # 基于阈值的匹配
-        print(f"Using similarity threshold: {threshold}")
+        logger.info(f"Using similarity threshold: {threshold}")
         for i in range(len(valid_images)):
             similarities = similarity_matrix[i]  # (m,) - 第i张图与所有图的相似度
             
             # 找出所有相似度大于阈值的索引（排除自己，自己的相似度为1）
             similar_mask = similarities > threshold
             similar_indices = torch.where(similar_mask)[0]
-            print(f"Image {i} has {len(similar_indices)} similar images above threshold {threshold}")
+            logger.info(f"Image {i} has {len(similar_indices)} similar images above threshold {threshold}")
             if len(similar_indices) < min_num:                
                 topk_vals, similar_indices = torch.topk(similarities, min(min_num+1, len(valid_images)))
-                print(f"  Not enough similar images above threshold, keeping top-{min_num} instead (found {len(similar_indices)})")
+                logger.info(f"  Not enough similar images above threshold, keeping top-{min_num} instead (found {len(similar_indices)})")
 
             # 如果大于阈值的匹配太多，只取前30个最相似的
             max_similar_num = max_num
@@ -354,7 +354,7 @@ def find_similar_images_parallel(image_features, max_num=30, min_num=20, thresho
                 # 排序并取前30个最相似的
                 top_vals, top_local_idx = torch.topk(similar_sims, min(max_similar_num, len(similar_sims)))
                 similar_indices = similar_indices[top_local_idx]
-                print(f"  Keeping top-{max_similar_num} similar images (limited from {len(similar_sims)})")
+                logger.info(f"  Keeping top-{max_similar_num} similar images (limited from {len(similar_sims)})")
 
             for j_local in similar_indices:
                 j_local = int(j_local.item())
@@ -377,12 +377,12 @@ def find_similar_images_parallel(image_features, max_num=30, min_num=20, thresho
             # print(f"Image {i} similarities shape: {similarities.shape}")
             
             # 使用 torch.topk 获取top-K相似的索引（排除自己）
-            topk_vals, topk_indices = torch.topk(similarities, min(k+1, len(valid_images)))
+            topk_vals, topk_indices = torch.topk(similarities, min(min_num+1, len(valid_images)))
             # print(f"topk_indices shape: {topk_indices.shape}")
-            print(f"topk_vals: {topk_vals}")
+            logger.info(f"topk_vals: {topk_vals}")
             
             # 跳过第一个（自己），取后面的k个
-            for idx_in_topk in range(1, min(k+1, len(topk_indices))):
+            for idx_in_topk in range(1, min(min_num+1, len(topk_indices))):
                 j_local = int(topk_indices[idx_in_topk].item())  # 转换为Python整数
                 
                 img_name0 = valid_images[i]
@@ -463,49 +463,60 @@ def match_features_with_lightglue(
     # img_num = len(image_list)
     # max_matches_per_image = int(min(max_matches_per_image, img_num * 0.3))
     
+    prior_match_pairs = None
     if os.path.exists(match_list_path):
-        match_pairs = load_image_pairs(match_list_path)
-    else:
-        logger.info("No match_list_path provided, matches will not be saved to file")
+        prior_match_pairs = load_image_pairs(match_list_path)
+        prior_match_pairs = set(prior_match_pairs)
+        logger.info(f"Loaded match pairs from existing file: {match_list_path}, total pairs: {len(prior_match_pairs)}")
 
-        # 根据策略选择匹配对
-        if match_strategy == "exhaustive":
-            match_pairs = []
-            for i, img_name0 in enumerate(image_list):
-                for j, img_name1 in enumerate(image_list):
-                    if i < j:
-                        match_pairs.append((img_name0, img_name1))
-            logger.info(f"Exhaustive matching: {len(match_pairs)} image pairs will be matched")
-        
-        elif match_strategy == "nearest_k":
-            logger.info(f"Finding top-{max_matches_per_image} similar images for each (parallel)...")
-            similarity_start = time.time()
-            match_pairs = find_similar_images_parallel(image_features, max_num=max_matches_per_image, min_num=min_matches_per_image, threshold=None, logger=logger)
-            logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
-        
-        elif match_strategy == "threshold":
-            logger.info(f"Using similarity threshold matching (threshold={similarity_threshold})...")
-            similarity_start = time.time()
-            match_pairs = find_similar_images_parallel(image_features, max_num=max_matches_per_image, min_num=min_matches_per_image, threshold=similarity_threshold, logger=logger)
-            logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
- 
-        else:
-            logger.warning(f"Unknown match_strategy '{match_strategy}', falling back to exhaustive")
-            match_pairs = []
-            for i, img_name0 in enumerate(image_list):
-                for j, img_name1 in enumerate(image_list):
-                    if i < j:
-                        match_pairs.append((img_name0, img_name1))
+    # 根据策略选择匹配对
+    if match_strategy == "exhaustive":
+        match_pairs = []
+        for i, img_name0 in enumerate(image_list):
+            for j, img_name1 in enumerate(image_list):
+                if i < j:
+                    match_pairs.append((img_name0, img_name1))                   
+        logger.info(f"Exhaustive matching: {len(match_pairs)} image pairs will be matched")
     
-        # Batch write match list to file if path provided
-        try:
-            os.makedirs(os.path.dirname(match_list_path), exist_ok=True)
-            with open(match_list_path, 'w') as match_file:
-                for img_name0, img_name1 in match_pairs:
-                    match_file.write(f"{img_name0} {img_name1}\n")
-            logger.info(f"Match list written to {match_list_path}")
-        except Exception as e:
-            logger.warning(f"Could not write match_list_path file: {e}")
+    elif match_strategy == "nearest_k":
+        logger.info(f"Finding top-{max_matches_per_image} similar images for each (parallel)...")
+        similarity_start = time.time()
+        match_pairs = find_similar_images_parallel(image_features, max_num=max_matches_per_image, min_num=min_matches_per_image, threshold=None, logger=logger)
+        logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
+    
+    elif match_strategy == "threshold":
+        logger.info(f"Using similarity threshold matching (threshold={similarity_threshold})...")
+        similarity_start = time.time()
+        match_pairs = find_similar_images_parallel(image_features, max_num=max_matches_per_image, min_num=min_matches_per_image, threshold=similarity_threshold, logger=logger)
+        logger.info(f"Similarity computation took {time.time() - similarity_start:.2f}s ({len(match_pairs)} pairs)")
+
+    else:
+        logger.warning(f"Unknown match_strategy '{match_strategy}', falling back to exhaustive")
+        match_pairs = []
+        for i, img_name0 in enumerate(image_list):
+            for j, img_name1 in enumerate(image_list):
+                if i < j:
+                    match_pairs.append((img_name0, img_name1))
+
+    if prior_match_pairs is not None:
+        filted_num = 0
+        for img_name0, img_name1 in match_pairs:
+            if (img_name0, img_name1) not in prior_match_pairs and (img_name1, img_name0) not in prior_match_pairs:
+                match_pairs.remove((img_name0, img_name1))
+                filted_num += 1
+                logger.info(f"Filtering out pair ({img_name0}, {img_name1}) not in prior match pairs")
+        logger.info(f"After filtering with prior match pairs, {len(match_pairs)} pairs remain for matching, filtered out {filted_num} pairs")
+        # match_pairs = prior_match_pairs
+
+    # Batch write match list to file if path provided
+    try:
+        os.makedirs(os.path.dirname(match_list_path), exist_ok=True)
+        with open(match_list_path, 'w') as match_file:
+            for img_name0, img_name1 in match_pairs:
+                match_file.write(f"{img_name0} {img_name1}\n")
+        logger.info(f"Match list written to {match_list_path}")
+    except Exception as e:
+        logger.warning(f"Could not write match_list_path file: {e}")
 
     # Buffer for batch write operations
     matches_to_write = []
@@ -549,7 +560,9 @@ def match_features_with_lightglue(
                 # Buffer matches for batch write
                 matches_to_write.append((image_id0, image_id1, matches))
                 match_list_pairs.append((img_name0, img_name1))
-            
+            else:
+                logger.info(f"Pair ({img_name0}, {img_name1}) has only {len(matches)} matches, skipping")
+                
         except Exception as e:
             logger.warning(f"Failed to match {img_name0} and {img_name1}: {e}")
             continue
@@ -567,7 +580,7 @@ def match_features_with_lightglue(
     logger.info(f"  Total matches found: {total_matches}")
     if total_match_pairs > 0:
         logger.info(f"  Average matches per pair: {total_matches/total_match_pairs:.1f}")
-    logger.info("SuperPoint + LightGlue features and matches written to database")
+    logger.info("features and matches written to database")
     
     db.close()
     

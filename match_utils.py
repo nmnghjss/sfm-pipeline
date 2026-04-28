@@ -214,8 +214,8 @@ def is_matchable_advanced(
     pose1,
     pose2,
     vis_cache,
-    angle_thresh_deg=45,
-    overlap_thresh=0.02,
+    max_angle=np.radians(70),
+    min_overlap=0.1,
     min_baseline=0.05,
     max_baseline=10.0
 ):
@@ -233,8 +233,9 @@ def is_matchable_advanced(
     # angle
     # -------------------------
     cos_theta = np.clip(np.dot(v1, v2), -1, 1)
-    angle = np.degrees(np.arccos(cos_theta))
-    if angle > angle_thresh_deg:
+    angle = np.arccos(cos_theta)
+    print(f"Angle between {pose1.name} and {pose2.name}: {np.degrees(angle):.2f} degrees")
+    if angle > max_angle:
         return False
 
     # -------------------------
@@ -264,7 +265,7 @@ def is_matchable_advanced(
 
     overlap = compute_voxel_overlap(vis1, vis2)
 
-    if overlap < overlap_thresh:
+    if overlap < min_overlap:
         return False
 
     return True
@@ -321,7 +322,7 @@ def load_image_pairs(pairs_txt, unique=True):
     print(f"[INFO] Loaded {len(pairs)} image pairs")
     return pairs
 
-def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=0.1, overlap_thresh=0.4):
+def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=0.1, max_angle=70, min_overlap=0.1):
 
     # 读取 COLMAP 数据
     cameras, poses, points3D = read_model(pose_prior_path)
@@ -334,16 +335,18 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
 
     # 构建匹配图
     pairs = []
+    images_list = []
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(output_txt), exist_ok=True)
     with open(output_txt, "w") as f:
-        for i in range(len(poses)):
-            for j in range(i+1, len(poses)):
-                pose_i = poses[i+1]
-                pose_j = poses[j+1]
-                if is_matchable_advanced(pose_i, pose_j, vis_cache, overlap_thresh=overlap_thresh):
+        for img_id_i, pose_i in poses.items():
+            images_list.append(pose_i.name)
+            for img_id_j, pose_j in poses.items():
+                if img_id_i >= img_id_j:
+                    continue
+                if is_matchable_advanced(pose_i, pose_j, vis_cache, max_angle=np.radians(max_angle), min_overlap=min_overlap):
                     pairs.append((pose_i.name, pose_j.name))
                     f.write(f"{pose_i.name} {pose_j.name}\n")
     print(f"[INFO] Matched image pairs computed and saved to {output_txt}, total pairs: {len(pairs)}")
 
-    return cameras[1].params[0]
+    return cameras[1].params[0], images_list

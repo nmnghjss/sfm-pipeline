@@ -171,7 +171,7 @@ def get_largest_subfolder(parent_dir: str) -> Optional[str]:
     if not os.path.isdir(parent_dir):
         raise ValueError(f"Path not found or not a directory: {parent_dir}")
     max_size = -1
-    largest_subfolder = None
+    largest_subfolder = parent_dir
     for name in os.listdir(parent_dir):
         sub_path = os.path.join(parent_dir, name)
         if not os.path.isdir(sub_path):

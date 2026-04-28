@@ -147,7 +147,7 @@ def extract_neural_features(
         
         try:
             # Load image
-            logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_path}")
+            # logger.info(f"{idx+1}/{len(image_files)} Loading image: {img_path}")
             img_tensor = load_image_use_torchvision(img_path, None, logger)
             # img_u8 = load_image_use_PIL(img_path, None, logger)
             # logger.info("to cp data to gpu")
@@ -165,7 +165,7 @@ def extract_neural_features(
                 continue
             
             # Extract features
-            logger.info(f"{idx+1}/{len(image_files)} Extracting features...")
+            # logger.info(f"{idx+1}/{len(image_files)} Extracting features...")
             with torch.no_grad():
                 feats = extractor.extract(img_tensor)
             # logger.info(f"[{idx+1}] Feature extraction done, keypoints num: {feats['keypoints'].shape}")

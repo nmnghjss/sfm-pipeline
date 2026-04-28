@@ -5,7 +5,7 @@ from argparse import ArgumentParser
 import shutil
 import time
 from datetime import datetime
-from mapper_cmd import get_ba_cmd, get_incremental_mapper_cmd, get_hierarchical_mapper_cmd, get_global_mapper_cmd, get_points_triangulate_cmd, get_pose_prior_global_mapper_cmd, get_pose_prior_mapper_cmd
+from mapper_cmd import get_ba_cmd, get_incremental_mapper_cmd, get_hierarchical_mapper_cmd, get_global_mapper_cmd, get_points_triangulate_cmd, get_pose_prior_global_mapper_cmd, get_pose_prior_mapper_cmd, get_reconstruction_refine_cmd
 from utils import run_subprocess, check_operating_system, count_images_in_dir_recursive, get_largest_subfolder, get_subfolders_names, clear_folder
 from database import ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
@@ -15,7 +15,7 @@ from database import initialize_colmap_database
 from feature_extractor_cmd import get_feature_extractor_cmd, extract_neural_features
 from match_cmd import get_exhaustive_matcher_cmd, generate_sequential_match_list, get_matches_importer_cmd, get_vocab_tree_matcher_cmd, match_features_with_lightglue
 
-#  ========================== Argument parser ========================== 
+#  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--skip_matching", action='store_true')
@@ -31,16 +31,16 @@ parser.add_argument("--single_fold", "-sf", default="0", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree"], help="Matching strategy to use")
+parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="pose_prior_global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="pose_prior_global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
-parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.6, help="Inlier ratio threshold for filtering matches before mapping")
+parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
@@ -54,7 +54,7 @@ parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--ar_pose_path", type=str, help="Path to AR pose file (if available)")
-parser.add_argument("--refine_num", type=int, default=3, help="refine reconstruction iterations num")
+parser.add_argument("--refine_num", type=int, default=0, help="refine reconstruction iterations num")
 args = parser.parse_args()
 
 
@@ -66,7 +66,6 @@ else:
     if not os.path.isabs(output_path):
         output_path = os.path.join(args.source_path, output_path)
 os.makedirs(output_path, exist_ok=True)
-
 
 
 # ========================== Helper functions =========================
@@ -169,6 +168,8 @@ logger.info(f"Source path: {args.source_path}")
 logger.info(f"Output path: {output_path}")
 distorted_sparse_path = os.path.join(output_path, "distorted/sparse")
 os.makedirs(distorted_sparse_path, exist_ok=True)
+refined_distorted_sparse_path = os.path.join(output_path, "distorted/sparse_refined")
+os.makedirs(refined_distorted_sparse_path, exist_ok=True)
 
 database_path = os.path.join(output_path, "distorted/database.db")
 images_dir = os.path.join(args.source_path, "input")
@@ -203,16 +204,30 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
 
     if not os.path.isabs(args.ar_pose_path):
         args.ar_pose_path = os.path.join(args.source_path, args.ar_pose_path)
-    prior_focal_length = compute_matched_image_pairs_by_pose_prior(args.ar_pose_path, matched_images_pairs_path, overlap_thresh=0.5)
-    logger.info(f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}")
+    prior_focal_length, images_list = compute_matched_image_pairs_by_pose_prior(
+        args.ar_pose_path,
+        matched_images_pairs_path,
+        voxel_size=0.1,
+        max_angle=70,
+        min_overlap=0.1,
+    )
+    logger.info(
+        f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}"
+    )
+
+    for img_path in images_full_path:
+        img_name = os.path.basename(img_path)
+        if img_name not in images_list:
+            logger.warning(f"Image {img_name} does not have ar-pose, please check consistency between AR pose file and input images")
+            images_full_path.remove(img_path)
+
+    logger.info(f"Using {len(images_full_path)} images")
+    # input("Press Enter to continue with feature extraction and mapping using the AR pose-based image pairs...")
 
 # ========================= Feature extraction ==================================
 image_features = None
 if args.external_feature:
     logger.info("Using external feature extraction...")
-    logger.info(f"  Match strategy: {args.match_strategy}")
-    if args.match_strategy in ["nearest_k", "quick"]:
-        logger.info(f"  Max matches per image: {args.max_matches_per_image}")
     
     # Initialize COLMAP database with images (without SIFT extraction)
     logger.info("Initializing COLMAP database with image metadata (without feature extraction)...")
@@ -268,11 +283,14 @@ else:
     feature_extraction_time = time.time() - t0
     logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 
-# ========================= Feature matching ========================= 
+# ========================= Feature matching =========================
 logger.info("Starting feature matching...")
 if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
     # Run LightGlue feature matching
     # args.match_strategy = "threshold"
+    logger.info(f"  Match strategy: {args.match_strategy}")
+    if args.match_strategy in ["nearest_k", "threshold"]:
+        logger.info(f"  Max matches per image: {args.max_matches_per_image}")    
     feature_type = "aliked" if args.feature_type.lower().startswith("aliked") else args.feature_type
     logger.info(f"Using {feature_type} features for matching")
    
@@ -379,7 +397,18 @@ else:
     feature_matching_time = time.time() - match_start
     logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
-# ========================= Calibrate view graph ========================= 
+# ========================= Filter matches by inliers (optional) =========================
+if args.filt_match:
+    logger.info("Filtering matches by inliers before mapping...")
+    filted_paris_num = filter_matches_by_inliers(
+        database_path=database_path,
+        min_num_inliers=args.filter_inlier_num_threshold,
+        min_inlier_ratio=args.filter_inlier_ratio_threshold,
+        logger=logger
+    )
+    logger.info(f"Filtering done. removed pairs: {filted_paris_num}")
+
+# ========================= Calibrate view graph =========================
 view_graph_calibrate_start = time.time()
 view_graph_calibrate_cmd = [
     colmap_command, "view_graph_calibrator",
@@ -401,7 +430,7 @@ logger.info(f"View graph calibrate done in {view_graph_calibrate_time:.2f} s")
 
 # ========================= Visualize matches (optional) =========================
 if args.visualize_matches:
-    logger.info("Visualizing matches for a few image pairs...")
+    logger.info("Visualizing matches image pairs...")
     view_graph, cameras, images, feature_name = ReadColmapDatabase(database_path)
     if view_graph is None or cameras is None or images is None:
         logger.warning("Could not read database for visualization, skipping visualization step")
@@ -412,22 +441,80 @@ if args.visualize_matches:
         visualize_image_pairs(view_graph, images, images_dir, vis_dir, num_pairs=100)
         print("Visualization completed.")
 
-
-# ========================= Filter matches by inliers (optional) =========================
-if args.filt_match:
-    logger.info("Filtering matches by inliers before mapping...")
-    filted_paris_num = filter_matches_by_inliers(
+# ========================= Mapper / Bundle Adjustment =========================
+# input("Press Enter to start mapper or refine...")
+mapper_log_path = os.path.join(output_path, "mapper.log")
+logger.info("Starting mapper ...")
+mapper_start = time.time()
+if args.mapper == "acc":
+    logger.info("Using incremental mapper with acc mode ...")
+    mapper_cmd = get_incremental_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
         database_path=database_path,
-        min_num_inliers=args.filter_inlier_num_threshold,
-        min_inlier_ratio=args.filter_inlier_ratio_threshold,
-        logger=logger
+        images_path=images_dir,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        ba_local_max_num_iterations=15,
+        ba_local_max_refinements=2,
+        ba_local_max_refinement_change=0.001,
+        ba_global_max_num_iterations=25,
+        ba_global_max_refinements=2,
+        ba_global_frames_ratio=1.5,
+        ba_global_points_ratio=1.5,
+        ba_global_max_refinement_change=0.001,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
     )
-    logger.info(f"Filtering done. removed pairs: {filted_paris_num}")
+elif args.mapper == "hierarchical":
+    logger.info("Using hierarchical mapper...")
+    mapper_cmd = get_hierarchical_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_dir,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
+    )
+elif args.mapper == "hierarchical_acc":
+    logger.info("Using hierarchical mapper with acc mode ...")
+    mapper_cmd = get_hierarchical_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_dir,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        ba_local_max_num_iterations=15,
+        ba_local_max_refinements=2,
+        ba_local_max_refinement_change=0.001,
+        ba_global_max_num_iterations=25,
+        ba_global_max_refinements=2,
+        ba_global_frames_ratio=1.5,
+        ba_global_points_ratio=1.5,
+        ba_global_max_refinement_change=0.001,
+        abs_pose_min_num_inliers=min_num_inliers,
+        abs_pose_min_inlier_ratio=min_inlier_ratio
+    )
+elif args.mapper == "global":
+    logger.info("Using global mapper...")
+    mapper_cmd = get_global_mapper_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_dir,
+        distorted_sparse_path=distorted_sparse_path,
+        use_gpu=use_gpu,
+        min_num_inliers=min_num_inliers,
+        ba_num_iterations=3,
+        gp_max_num_iterations=100,
+        ba_ceres_max_num_iterations=200
+    )
 
-# ========================= Points triangulation with pose prior (optional) =========================
-if args.ar_pose_path is not None and len(args.ar_pose_path) and args.mapper == "pose_prior_global":
-    logger.info("Using ar-based mapper...")
-
+elif args.mapper == "pose_prior_incremental":
+    logger.info("Using ar-based incremental mapper...")
     triangulate_cmd = get_points_triangulate_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -436,18 +523,21 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) and args.mapper == "
         distorted_sparse_path=distorted_sparse_path,
         ar_pose_path=args.ar_pose_path,
         min_num_inliers=min_num_inliers,
-        tri_create_max_angle_error = 4.0, # 2.0
-        tri_continue_max_angle_error = 4.0, # 2.0
-        tri_merge_max_reproj_error = 8.0, # 4.0
-        tri_complete_max_reproj_error = 8.0, # 4.0
-        tri_complete_max_transitivity = 10, # 5
-        tri_re_max_angle_error = 8.0 # 5       
+        tri_create_max_angle_error = 2.0, # 2.0
+        tri_continue_max_angle_error = 2.0, # 2.0
+        tri_merge_max_reproj_error = 4.0, # 4.0
+        tri_complete_max_reproj_error = 4.0, # 4.0
+        tri_complete_max_transitivity = 5, # 5
+        filter_max_reproj_error = 2.0, # 4.0
+        filter_min_tri_angle = 1.5, # 1.5
+        tri_re_max_angle_error = 5.0 # 5       
     )
     triangulate_start = time.time()
     run_subprocess(triangulate_cmd, logger)
     triangulate_time = time.time() - triangulate_start
-    logger.info(f"Triangulation completed in {triangulate_time:.2f} s")
+    logger.info(f"Pose prior triangulation completed in {triangulate_time:.2f} s")
 
+    # input("Press Enter to start bundle adjustment with pose prior...")
     ba_start = time.time()
     ba_cmd = get_ba_cmd(
         colmap_command=colmap_command,
@@ -468,91 +558,37 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) and args.mapper == "
     )    
     run_subprocess(ba_cmd, logger)
 
-    # run_subprocess(retriangulate_cmd, logger)
-    # run_subprocess(ba_cmd, logger)
-
     ba_time = time.time() - ba_start
-    logger.info(f"Bundle adjustment completed in {ba_time:.2f} s")
-# ========================= Mapper / Bundle Adjustment =========================
-mapper_log_path = os.path.join(output_path, "mapper.log")
-logger.info("Starting mapper...")
-t2 = time.time()
-if args.mapper == "acc":
-    mapper_cmd = get_incremental_mapper_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        images_path=images_dir,
-        distorted_sparse_path=distorted_sparse_path,
-        use_gpu=use_gpu,
-        ba_local_max_num_iterations=15,
-        ba_local_max_refinements=2,
-        ba_local_max_refinement_change=0.001,
-        ba_global_max_num_iterations=25,
-        ba_global_max_refinements=2,
-        ba_global_frames_ratio=1.5,
-        ba_global_points_ratio=1.5,
-        ba_global_max_refinement_change=0.001,
-        abs_pose_min_num_inliers=min_num_inliers,
-        abs_pose_min_inlier_ratio=min_inlier_ratio
-    )
-elif args.mapper == "hierarchical":
-    mapper_cmd = get_hierarchical_mapper_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        images_path=images_dir,
-        distorted_sparse_path=distorted_sparse_path,
-        use_gpu=use_gpu,
-        abs_pose_min_num_inliers=min_num_inliers,
-        abs_pose_min_inlier_ratio=min_inlier_ratio
-    )
-elif args.mapper == "hierarchical_acc":
-    mapper_cmd = get_hierarchical_mapper_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        images_path=images_dir,
-        distorted_sparse_path=distorted_sparse_path,
-        use_gpu=use_gpu,
-        ba_local_max_num_iterations=15,
-        ba_local_max_refinements=2,
-        ba_local_max_refinement_change=0.001,
-        ba_global_max_num_iterations=25,
-        ba_global_max_refinements=2,
-        ba_global_frames_ratio=1.5,
-        ba_global_points_ratio=1.5,
-        ba_global_max_refinement_change=0.001,
-        abs_pose_min_num_inliers=min_num_inliers,
-        abs_pose_min_inlier_ratio=min_inlier_ratio
-    )
-elif args.mapper == "global":
-    mapper_cmd = get_global_mapper_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        images_path=images_dir,
-        distorted_sparse_path=distorted_sparse_path,
-        use_gpu=use_gpu,
-        min_num_inliers=min_num_inliers,
-        ba_num_iterations=5,
-        gp_max_num_iterations=100,
-        ba_ceres_max_num_iterations=200
-    )
+    logger.info(f"Pose prior increment mapper bundle adjustment completed in {ba_time:.2f} s")
 elif args.mapper == "pose_prior_global":
+    logger.info("Using global mapper with pose prior...")
     mapper_cmd = get_pose_prior_global_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
         images_path=images_dir,
-        distorted_sparse_path=distorted_sparse_path,
+        prior_reconstruction_path=args.ar_pose_path,
+        output_reconstruction_path=distorted_sparse_path,
+        clear_points=1,
         use_gpu=use_gpu,
         min_num_inliers=min_num_inliers,
-        ba_num_iterations=5,
+        ba_num_iterations=3,
         gp_max_num_iterations=100,
-        ba_ceres_max_num_iterations=200
+        ba_ceres_max_num_iterations=200,
+        skip_rotation_averaging=0,
+        skip_rotation_averaging_initialization=1,
+        skip_track_establishment=0,
+        skip_global_positioning=0,
+        ba_skip_fixed_points_stage=1,
+        ba_skip_fixed_rotation_stage=0,
+        skip_bundle_adjustment=0, # 0
+        skip_retriangulation=0, # 0        
+        ba_skip_joint_optimization_stage=0,
+        max_angular_reproj_error_deg=1.0,
+        max_normalized_reproj_error=0.01        
     )
 elif args.mapper == "pose_prior":
+    logger.info("Using incremental mapper with only images's position prior...")
     mapper_cmd = get_pose_prior_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -581,6 +617,7 @@ elif args.mapper == "pose_prior":
         prior_position_std_z  = 1.0      
     )
 else:
+    logger.info("Using incremental mapper...")
     mapper_cmd = get_incremental_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -599,29 +636,39 @@ else:
         abs_pose_min_num_inliers=min_num_inliers,
         abs_pose_min_inlier_ratio=min_inlier_ratio
     )
-mapper_start = time.time()
-if args.mapper != "pose_prior_global":
+
+if args.mapper != "pose_prior_incremental":
     run_subprocess(mapper_cmd, logger)
-else:
-    if args.refine_num > 0:
-        refine_start = time.time()
-        for it in range(0, args.refine_num):
-            logger.info(f" {it + 1} / 3 reconstruction refine")
-            run_subprocess(mapper_cmd, logger)
-        refine_time = time.time() - refine_start        
-mapper_time = time.time() - mapper_start
-mapper_time += triangulate_time + ba_time + view_graph_calibrate_time
+
+if args.refine_num > 0:
+    refine_start = time.time()
+    refine_cmd = get_reconstruction_refine_cmd(colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_dir,
+        prior_reconstruction_path=distorted_sparse_path,
+        output_reconstruction_path=distorted_sparse_path,
+        clear_points=0,
+        use_gpu=use_gpu,
+        min_num_inliers=min_num_inliers,
+        ba_num_iterations=3,
+        gp_max_num_iterations=100,
+        ba_ceres_max_num_iterations=200)
+    for it in range(0, args.refine_num):
+        logger.info(f" {it + 1} / {args.refine_num} reconstruction refine")
+        run_subprocess(refine_cmd, logger)
+    refine_time = time.time() - refine_start        
+mapper_time = time.time() - mapper_start + view_graph_calibrate_time
 logger.info(f"Mapper done in {mapper_time:.2f} s")
 
-# ========================= Image undistortion ========================= 
+# ========================= Image undistortion =========================
+# input("Press Enter to start image undistortion...")
 statr_undistort = time.time()
 input_subdirs = get_subfolders_names(images_dir)
 for subdir in input_subdirs:
     output_subdir_path = os.path.join(output_path, "images", subdir)
     os.makedirs(output_subdir_path, exist_ok=True)
 largest_sparse_folder = get_largest_subfolder(distorted_sparse_path)
-if args.refine_num == 0 and args.mapper == "pose_prior_global":
-    largest_sparse_folder = distorted_sparse_path
 logger.info(f"largest_sparse_folder: {largest_sparse_folder}")
 img_undist_cmd = [
     colmap_command, "image_undistorter",
