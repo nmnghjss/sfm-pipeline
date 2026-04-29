@@ -15,7 +15,7 @@ def check_operating_system():
     """
     # 方法1：使用 sys.platform（推荐）
     platform = sys.platform
-    print(f"sys.platform 返回值: {platform}")
+    print(f"sys.platform: {platform}")
     
     if platform.startswith('win'):
         os_type = 'Windows'
@@ -26,14 +26,6 @@ def check_operating_system():
 
     return os_type
 
-
-# def resource_path() -> str:
-#     """Get absolute path for packaged or development scripts."""
-#     try:
-#         base_path = sys._MEIPASS
-#     except AttributeError:
-#         base_path = os.path.dirname(os.path.abspath(__file__))
-#     return base_path
 
 def run_subprocess(cmd: list, logger: Optional[logging.Logger] = None) -> int:
     """

@@ -686,10 +686,13 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
             should_remove = False
             reason = []
             
-            if num_verified < min_num_inliers or inlier_ratio < min_inlier_ratio:
+            if num_verified < min_num_inliers:
                 should_remove = True
-                reason.append(f"inliers={num_verified}<{min_num_inliers}, ratio={inlier_ratio:.4f}<{min_inlier_ratio}")
-            
+                reason.append(f"inliers={num_verified}<{min_num_inliers}")
+            if inlier_ratio < min_inlier_ratio:
+                should_remove = True
+                reason.append(f"inlier_ratio={inlier_ratio:.4f}<{min_inlier_ratio}")
+
             if should_remove:
                 # 删除这对匹配
                 db.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))

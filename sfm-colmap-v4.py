@@ -39,7 +39,7 @@ from match_cmd import (
     get_vocab_tree_matcher_cmd,
     match_features_with_lightglue,
 )
-from read_write_model import read_images_binary, read_model, write_images_binary, write_model
+from read_write_model import read_images_binary, write_images_binary
 
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
@@ -55,24 +55,24 @@ parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree", "threshold"], help="Matching strategy to use")
+parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
-parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
+parser.add_argument("--filt_match", action="store_false", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
-parser.add_argument("--external_feature", action="store_false", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
-parser.add_argument("--external_match", action="store_false", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
+parser.add_argument("--external_feature", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
+parser.add_argument("--external_match", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
@@ -345,7 +345,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         matched_images_pairs_path=matched_images_pairs_path,
         feature_match_type = feature_match_type, 
         use_gpu = 1,
-        max_feature_num = 2048,
+        max_feature_num = args.max_feature_num,
         min_num_inliers = 30,
         min_inlier_ratio = 0.1,                             
         sift_lightglue_match_path = sift_lightglue_match_path,
@@ -365,7 +365,7 @@ else:
             database_path=database_path,
             feature_match_type=feature_match_type,
             use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num,
+            max_feature_num=args.max_feature_num*4,
             min_num_inliers=min_num_inliers,
             min_inlier_ratio=min_inlier_ratio,
             sift_lightglue_match_path=sift_lightglue_match_path,
