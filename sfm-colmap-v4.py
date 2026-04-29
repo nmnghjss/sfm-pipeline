@@ -5,15 +5,41 @@ from argparse import ArgumentParser
 import shutil
 import time
 from datetime import datetime
-from mapper_cmd import get_ba_cmd, get_incremental_mapper_cmd, get_hierarchical_mapper_cmd, get_global_mapper_cmd, get_points_triangulate_cmd, get_pose_prior_global_mapper_cmd, get_pose_prior_mapper_cmd, get_reconstruction_refine_cmd
-from utils import run_subprocess, check_operating_system, count_images_in_dir_recursive, get_largest_subfolder, get_subfolders_names, clear_folder
+from mapper_cmd import (
+    get_ba_cmd,
+    get_incremental_mapper_cmd,
+    get_hierarchical_mapper_cmd,
+    get_global_mapper_cmd,
+    get_points_triangulate_cmd,
+    get_pose_prior_global_mapper_cmd,
+    get_pose_prior_mapper_cmd,
+    get_reconstruction_refine_cmd,
+)
+from utils import (
+    delete_directory,
+    run_subprocess,
+    check_operating_system,
+    count_images_in_dir_recursive,
+    get_largest_subfolder,
+    get_subfolders_names,
+    get_subfolders,
+    clear_folder,
+    move_files,
+)
 from database import ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
 
 from match_utils import compute_matched_image_pairs_by_pose_prior
 from database import initialize_colmap_database
 from feature_extractor_cmd import get_feature_extractor_cmd, extract_neural_features
-from match_cmd import get_exhaustive_matcher_cmd, generate_sequential_match_list, get_matches_importer_cmd, get_vocab_tree_matcher_cmd, match_features_with_lightglue
+from match_cmd import (
+    get_exhaustive_matcher_cmd,
+    generate_sequential_match_list,
+    get_matches_importer_cmd,
+    get_vocab_tree_matcher_cmd,
+    match_features_with_lightglue,
+)
+from read_write_model import read_images_binary, read_model, write_images_binary, write_model
 
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
@@ -26,16 +52,16 @@ parser.add_argument("--default_focal_length_factor", default=1.0, type=float, he
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
-parser.add_argument("--single_camera", "-sc",default="1", type=str)
-parser.add_argument("--single_fold", "-sf", default="0", type=str)
+parser.add_argument("--single_camera", "-sc",default="0", type=str)
+parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="pose_prior_global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image (for SuperPoint)")
+parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
@@ -45,8 +71,8 @@ parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help=
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
-parser.add_argument("--external_feature", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
-parser.add_argument("--external_match", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
+parser.add_argument("--external_feature", action="store_false", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
+parser.add_argument("--external_match", action="store_false", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
@@ -127,8 +153,9 @@ os_type = check_operating_system()
 current_path = resource_path()
 print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
-    # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/bin/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
+    colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.2\\bin\\colmap.exe"
 else:
     colmap_path = "colmap"
@@ -168,8 +195,6 @@ logger.info(f"Source path: {args.source_path}")
 logger.info(f"Output path: {output_path}")
 distorted_sparse_path = os.path.join(output_path, "distorted/sparse")
 os.makedirs(distorted_sparse_path, exist_ok=True)
-refined_distorted_sparse_path = os.path.join(output_path, "distorted/sparse_refined")
-os.makedirs(refined_distorted_sparse_path, exist_ok=True)
 
 database_path = os.path.join(output_path, "distorted/database.db")
 images_dir = os.path.join(args.source_path, "input")
@@ -180,7 +205,7 @@ logger.info(f"input images num: {input_img_num}")
 image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 images_full_path = sorted(images_full_path)
 logger.info(f"Found {len(images_full_path)} images")
-# print(f"First 5 images: {images_full_path[:5]}")
+
 # ======================== GPU setup ==========================================
 use_gpu = 0 if args.no_gpu else 1
 
@@ -235,7 +260,7 @@ if args.external_feature:
     db_init_success = initialize_colmap_database(
         database_path=database_path,
         images_dir= images_dir,
-        images_path=images_full_path,
+        input_images_path=images_full_path,
         camera_model=args.camera,
         prior_fx=prior_focal_length,
         prior_fy=prior_focal_length,
@@ -700,6 +725,35 @@ for item in os.listdir(sparse_output_path):
         shutil.move(src_path, dst_path)
 img_num, _ = count_images_in_dir_recursive(os.path.join(output_path, "images"))
 logger.info("Sparse output successfully organized into sparse/0.")
+
+# ========================= Rename iamge name in colmap results and move all images to output/images (if needed) =========================
+logger.info("Moving images to output/images and updating names in sparse model ...")
+subdir_images_path = get_subfolders(os.path.join(output_path, "images"))
+for subdir in subdir_images_path:
+    move_files(subdir, os.path.join(output_path, "images"))
+    delete_directory(subdir)
+
+if len(subdir_images_path) > 0:
+    logger.info(f"Moved images from {len(subdir_images_path)} subdirectories to output/images and deleted the subdirectories")
+    images_result = os.path.join(output_path, "sparse/0", "images.bin")
+    images_backup = os.path.join(output_path, "sparse/0", "images_backup.bin")
+    os.rename(images_result, images_backup)
+    images = read_images_binary(images_backup)
+    for img_id, img in images.items():
+        img_name = img.name
+        img_path = os.path.join(output_path, "images", img_name)
+        # Update image name in COLMAP results to match the input image name
+        img_name = os.path.basename(img_path)
+        new_path = os.path.join(output_path, "images", img_name)
+        if not os.path.isfile(new_path):
+            logger.warning(f"Image file {new_path} does not exist, skipping image name update for image ID {img_id}")
+            continue
+        # Use _replace() to create a new Image object since namedtuple fields are immutable
+        images[img_id] = img._replace(name=img_name)
+
+    # Write the updated model back to disk
+    write_images_binary(images, images_result)
+
 
 # --------------------------
 # Timing summary

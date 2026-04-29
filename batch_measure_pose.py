@@ -123,13 +123,13 @@ if __name__ == '__main__':
         data_path = os.path.dirname(dataset_dir)        
         print(f"Processing dataset at: {data_path}")
 
-        input_images_num = count_images_in_dir(os.path.join(data_path, "input"))
+        input_images_num, _, _ = count_images_in_dir(os.path.join(data_path, "input"))
         print(f"    输入图像数量: {input_images_num}")
 
         base_sfm_dir = os.path.join(data_path, args.base_dir, "sparse", "0")
         update_sfm_dir = os.path.join(data_path, args.update_dir, "sparse", "0")
-        base_registered_num = count_images_in_dir(os.path.join(data_path, args.base_dir, "images"))
-        update_registered_num = count_images_in_dir(os.path.join(data_path, args.update_dir, "images"))
+        base_registered_num, _, _ = count_images_in_dir(os.path.join(data_path, args.base_dir, "images"))
+        update_registered_num, _, _ = count_images_in_dir(os.path.join(data_path, args.update_dir, "images"))
         print(f"    基线 SfM 注册图像数量: {base_registered_num}")
         print(f"    更新 SfM 注册图像数量: {update_registered_num}")
 

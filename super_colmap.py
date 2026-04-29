@@ -293,7 +293,7 @@ if __name__ == "__main__":
         elif os.path.isfile(src_path):
             shutil.move(src_path, dst_path)
 
-    img_num = count_images_in_dir(os.path.join(output_dir, "images"))
+    img_num, _, _ = count_images_in_dir(os.path.join(output_dir, "images"))
 
     logger.info("Sparse output successfully organized into sparse/0.")
 

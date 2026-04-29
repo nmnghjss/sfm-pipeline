@@ -189,7 +189,7 @@ def get_largest_subfolder(parent_dir: str) -> Optional[str]:
     return largest_subfolder
 
 
-def count_images_in_dir(folder_path: str) -> int:
+def count_images_in_dir(folder_path: str) -> tuple:
     """
     统计指定文件夹路径下的图像文件数量（仅当前文件夹，不包含子文件夹）
     """
@@ -197,23 +197,26 @@ def count_images_in_dir(folder_path: str) -> int:
     image_extensions = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.tif', '.webp'}
 
     image_count = 0
-
+    images_list = []
+    all_files_num = 0
     if not os.path.exists(folder_path):
         print(f"错误：文件夹路径 '{folder_path}' 不存在！")
-        return 0
+        return 0, 0, []
     if not os.path.isdir(folder_path):
         print(f"错误：'{folder_path}' 不是一个有效的文件夹路径！")
-        return 0
+        return 0, 0, []
 
     # 遍历文件夹中的所有文件
     for file_name in os.listdir(folder_path):
         file_path = os.path.join(folder_path, file_name)
+        all_files_num += 1
         if os.path.isfile(file_path):
             file_ext = os.path.splitext(file_name)[1].lower()
             if file_ext in image_extensions:
                 image_count += 1
+                images_list.append(file_path)
 
-    return image_count
+    return image_count, all_files_num, images_list
 
 
 
@@ -453,3 +456,40 @@ def get_short_path_name(long_path):
         logger.warning(f"Failed to convert path to short format: {e}")
     
     return long_path  # Fallback to the original path if conversion fails
+
+
+def move_files(input_dir: str, output_dir: str, overwrite: bool = False, logger: Optional[logging.Logger] = None) -> None:
+    """
+    将 input_dir 文件夹下的所有文件移动到 output_dir（仅顶层文件，不包含子文件夹）。
+    :param input_dir: 源文件夹路径
+    :param output_dir: 目标文件夹路径
+    :param overwrite: 目标存在同名文件时是否覆盖（默认 False，跳过）
+    """
+    if logger is None:
+        logger = logging.getLogger("file mover")
+
+    # 1. 校验源路径
+    if not os.path.isdir(input_dir):
+        raise FileNotFoundError(f"输入文件夹不存在: {input_dir}")
+
+    # 2. 自动创建目标文件夹（含缺失的父目录）
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 3. 遍历并移动文件
+    for filename in os.listdir(input_dir):
+        src_path = os.path.join(input_dir, filename)
+        dst_path = os.path.join(output_dir, filename)
+
+        # 处理同名文件冲突
+        if os.path.exists(dst_path):
+            if not overwrite:
+                logger.warning(f" 跳过已存在文件: {filename}")
+                continue
+            else:
+                os.remove(dst_path)  # 覆盖模式：先删除旧文件
+        try:
+            # shutil.move 兼容跨磁盘移动，且自动处理权限
+            shutil.move(src_path, dst_path)
+            # logger.info(f" 已移动: {filename}")
+        except Exception as e:
+            logger.error(f" 移动失败 {filename}: {e}")

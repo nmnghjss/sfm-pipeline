@@ -4,8 +4,9 @@ import sqlite3
 import time
 import os
 import logging
+from PIL import Image
 from defs import ViewGraph, ImagePair, Cameras, Images, CameraModelId, ConfigurationType
-
+from utils import count_images_in_dir, get_subfolders
 
 IS_PYTHON3 = sys.version_info[0] >= 3
 MAX_IMAGE_ID = 2**31 - 1
@@ -369,7 +370,7 @@ def ReadColmapDatabase(path):
             image_pairs[pair_key].H = blob_to_array(H_blob, np.float64).reshape(3, 3)
         else:
             print(f"Warning: pair {name1} - {name2}: Homography matrix is None, marking this pair as invalid.")
-            
+
         image_pairs[pair_key].config = config
 
     view_graph.image_pairs = {pair_key: image_pair for pair_key, image_pair in image_pairs.items() if image_pair.is_valid}
@@ -438,7 +439,7 @@ def ReadColmapDatabase(path):
 def initialize_colmap_database(
     database_path: str,
     images_dir: str,
-    images_path: str,
+    input_images_path: str,
     camera_model: str = "OPENCV",
     prior_fx = None,
     prior_fy = None,
@@ -471,29 +472,14 @@ def initialize_colmap_database(
         
         # Get image list
         # image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
-        image_files = sorted(images_path)
-        
-        if not image_files:
-            logger.error(f"No images found in {images_path}")
+
+        if not input_images_path:
+            logger.error(f"No images found in {images_dir}")
             db.close()
             return False
         
-        logger.info(f"Found {len(image_files)} images")
-        
-        # Add single camera to database (using first image dimensions)
-        # Use PIL to read image dimensions only (more efficient and handles non-ASCII paths)
-        first_image_path = images_path[0]
-        try:
-            from PIL import Image
-            img = Image.open(first_image_path)
-            width, height = img.size
-        except Exception as e:
-            logger.error(f"Failed to read first image dimensions: {first_image_path}. Error: {e}")
-            db.close()
-            return False
-        
-        logger.info(f"Image dimensions: {width}x{height}")
-        
+        logger.info(f"Input {len(input_images_path)} images")
+
         # Map camera model string to COLMAP model ID    
         camera_model_id = {
             "SIMPLE_PINHOLE": 0,
@@ -515,81 +501,91 @@ def initialize_colmap_database(
             logger.warning(f"Unknown camera model '{camera_model}', defaulting to OPENCV")
             camera_model_id = 4
 
+        sub_folders = get_subfolders(images_dir)
+        if len(sub_folders) == 0:
+            logger.info("No subfolders found.")
+            sub_folders = [images_dir]
 
-        fx = prior_fx if prior_fx is not None else max(width, height)
-        fy = prior_fy if prior_fy is not None else  max(width, height)
-        cx = width / 2
-        cy = height / 2
-
-        if camera_model_id == 0:
-            # SIMPLE_PINHOLE: f, cx, cy
-            camera_params = [max(fx, fy), cx, cy]
-        elif camera_model_id == 1:
-            # PINHOLE: fx, fy, cx, cy
-            camera_params = [fx, fy, cx, cy]
-        elif camera_model_id == 2:
-            # SIMPLE_RADIAL: f, cx, cy, k
-            camera_params = [max(fx, fy), cx, cy, 0.0]
-        elif camera_model_id == 3:
-            # RADIAL: f, cx, cy, k1, k2
-            camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
-        elif camera_model_id == 4:
-            # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
-            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-        elif camera_model_id == 5:
-            # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
-            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-        elif camera_model_id == 6:
-            # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
-            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        elif camera_model_id == 7:
-            # FOV: fx, fy, cx, cy, omega
-            camera_params = [fx, fy, cx, cy, 0.0]
-        elif camera_model_id == 8:
-            # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
-            camera_params = [max(fx, fy), cx, cy, 0.0]
-        elif camera_model_id == 9:
-            # RADIAL_FISHEYE: f, cx, cy, k1, k2
-            camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
-        elif camera_model_id == 10:
-            # THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1";
-            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        elif camera_model_id == 11:
-            # RAD_TAN_THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3"
-            camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-        else:
-            logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
-            camera_params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
-            camera_model_id = 4  # OPENCV
-        
-        camera_id = db.add_camera(
-            model=camera_model_id,
-            width=width,
-            height=height,
-            params=camera_params,
-            prior_focal_length=False
-        )
-        logger.info(f"Added camera: model={camera_model}, id={camera_id}")
-        db.commit()
-        
-        # Add images to database
-        image_count = 0
-        for image_idx, image_file in enumerate(image_files):
-            img_rel_path = os.path.relpath(image_file, images_dir)
-            logger.debug(f"Adding image {img_rel_path} with camera_id {camera_id}")
-            try:
-                image_id = db.add_image(
-                    name=img_rel_path,
-                    camera_id=camera_id
-                )
-                image_count += 1
-                if (image_idx + 1) % 100 == 0:
-                    logger.info(f"  Added {image_idx + 1}/{len(image_files)} images to database")
-            except Exception as e:
-                logger.warning(f"Failed to add image {image_file}: {e}")
+        for sub_folder in sub_folders:
+            logger.info(f"Processing subfolder: {sub_folder}")
+            images_num, all_files_num, images_path = count_images_in_dir(sub_folder)
+            logger.info(f"  Found {images_num} images in this subfolder with {all_files_num} total files.")
+            if images_num == 0 or images_num < all_files_num * 0.8:
+                logger.warning(f"  Warning: Only {images_num} images found out of {all_files_num} total files in {sub_folder}. Check if the path is correct and contains valid image files.")
                 continue
+
+            first_image_path = images_path[0]
+            try:                
+                img = Image.open(first_image_path)
+                width, height = img.size
+            except Exception as e:
+                logger.error(f"Failed to read first image dimensions: {first_image_path}. Error: {e}")
+                db.close()
+                return False            
+            logger.info(f"Image dimensions: {width}x{height}")
+
+            fx = prior_fx if prior_fx is not None else max(width, height)
+            fy = prior_fy if prior_fy is not None else  max(width, height)
+            cx = width / 2
+            cy = height / 2
+
+            if camera_model_id == 0: # SIMPLE_PINHOLE: f, cx, cy                
+                camera_params = [max(fx, fy), cx, cy]
+            elif camera_model_id == 1: # PINHOLE: fx, fy, cx, cy                
+                camera_params = [fx, fy, cx, cy]
+            elif camera_model_id == 2: # SIMPLE_RADIAL: f, cx, cy, k                
+                camera_params = [max(fx, fy), cx, cy, 0.0]
+            elif camera_model_id == 3:  # RADIAL: f, cx, cy, k1, k2               
+                camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
+            elif camera_model_id == 4: # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2                
+                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+            elif camera_model_id == 5: # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4                
+                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+            elif camera_model_id == 6: # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6                
+                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            elif camera_model_id == 7: # FOV: fx, fy, cx, cy, omega                
+                camera_params = [fx, fy, cx, cy, 0.0]
+            elif camera_model_id == 8: # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1                
+                camera_params = [max(fx, fy), cx, cy, 0.0]
+            elif camera_model_id == 9: # RADIAL_FISHEYE: f, cx, cy, k1, k2                
+                camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
+            elif camera_model_id == 10: # THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1";                
+                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            elif camera_model_id == 11: # RAD_TAN_THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3"                
+                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            else:
+                logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
+                camera_params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
+                camera_model_id = 4  # OPENCV
+            
+            camera_id = db.add_camera(
+                model=camera_model_id,
+                width=width,
+                height=height,
+                params=camera_params,
+                prior_focal_length=False
+            )
+            logger.info(f"Added camera: model={camera_model}, id={camera_id}")
+            db.commit()
         
-        db.commit()
+            # Add images to database
+            image_count = 0
+            for image_idx, image_file in enumerate(images_path):
+                img_rel_path = os.path.relpath(image_file, images_dir)
+                logger.debug(f"Adding image {img_rel_path} with camera_id {camera_id}")
+                try:
+                    image_id = db.add_image(
+                        name=img_rel_path,
+                        camera_id=camera_id
+                    )
+                    image_count += 1
+                    if (image_idx + 1) % 100 == 0:
+                        logger.info(f"  Added {image_idx + 1}/{len(input_images_path)} images to database")
+                except Exception as e:
+                    logger.warning(f"Failed to add image {image_file}: {e}")
+                    continue
+        
+            db.commit()
         db.close()
         
         logger.info(f"Successfully initialized database with {image_count} images")
