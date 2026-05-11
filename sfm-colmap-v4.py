@@ -44,6 +44,7 @@ from read_write_model import read_images_binary, write_images_binary
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
+parser.add_argument("--num_threads", type=int, default=-1, help="threads used when no use gpu")
 parser.add_argument("--skip_matching", action='store_true')
 parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=str)
 parser.add_argument("--output_path", "-o", default="", type=str)
@@ -56,11 +57,11 @@ parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
-parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="custom", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--max_image_size", type=int, default=3200, help="maximum image size used to extract feature")
+parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="pose_prior_incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
@@ -71,14 +72,15 @@ parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help=
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
-parser.add_argument("--external_feature", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
-parser.add_argument("--external_match", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
+parser.add_argument("--internal_feature", action="store_true", help="Whether to use internal feature extraction instead of COLMAP's built-in methods")
+parser.add_argument("--internal_match", action="store_true", help="Whether to use COLMAP's built-in methods for feature matching instead of external LightGlue matching")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
+parser.add_argument("--calibrate_view_graph", action="store_true", help="Whether to run view graph calibration after feature matching and before mapping")
 parser.add_argument("--ar_pose_path", type=str, help="Path to AR pose file (if available)")
 parser.add_argument("--voxel_size", type=float, default=0.01, help="Voxel size for AR pose-based image pair generation")
 parser.add_argument("--max_angle", type=float, default=70, help="Maximum angle (in degrees) between camera views for AR pose-based image pair generation")
@@ -161,6 +163,7 @@ if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
     colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.2\\bin\\colmap.exe"
+    colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-3.8\\COLMAP.bat"
 else:
     colmap_path = "colmap"
 
@@ -247,7 +250,7 @@ if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
 
 # ========================= Feature extraction ==================================
 image_features = None
-if args.external_feature:
+if not args.internal_feature:
     logger.info("Using external feature extraction...")
     
     # Initialize COLMAP database with images (without SIFT extraction)
@@ -268,7 +271,7 @@ if args.external_feature:
     
     # Now run SuperPoint feature extraction    
     image_features, image_id_map, feat_ext_time = extract_neural_features(
-        feature_type=args.feature_type,
+        feature_type="SIFT",
         local_weights_root=current_path,
         database_path=database_path,
         images_dir=images_dir,
@@ -293,6 +296,7 @@ else:
         camera_model=args.camera,
         default_focal_length_factor=args.default_focal_length_factor,
         use_gpu=use_gpu,
+        num_threads=args.num_threads,
         max_image_size=args.max_image_size,
         max_feature_num=args.max_feature_num,
         aliked_n16rot_path=aliked_n16rot_path,
@@ -306,7 +310,7 @@ else:
 
 # ========================= Feature matching =========================
 logger.info("Starting feature matching...")
-if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
+if image_features is not None and (not args.internal_match or args.match_strategy == "threshold"):
     # Run LightGlue feature matching
     # args.match_strategy = "threshold"
     logger.info(f"  Match strategy: {args.match_strategy}")
@@ -361,6 +365,7 @@ else:
             database_path=database_path,
             feature_match_type=feature_match_type,
             use_gpu=use_gpu,
+            num_threads=args.num_threads,
             max_feature_num=args.max_feature_num*4,
             min_num_inliers=min_num_inliers,
             min_inlier_ratio=min_inlier_ratio,
@@ -453,23 +458,26 @@ if args.filt_match:
 
 # ========================= Calibrate view graph =========================
 view_graph_calibrate_start = time.time()
-view_graph_calibrate_cmd = [
-    colmap_command, "view_graph_calibrator",
-    "--log_level", str(log_level),
-    "--database_path", database_path,
-    "--cross_validate_prior_focal_lengths", "1",
-    "--min_calibrated_pair_ratio", "0.5",
-    "--reestimate_relative_pose", "1",
-    "--min_focal_length_ratio", "0.1",
-    "--max_focal_length_ratio", "10",
-    "--max_calibration_error", "2",
-    "--relpose_max_error", "1",
-    "--relpose_min_num_inliers", "30",
-    "--relpose_min_inlier_ratio", "0.25",
-]
-run_subprocess(view_graph_calibrate_cmd, logger)
+if args.calibrate_view_graph:
+    logger.info("Calibrating view graph with COLMAP's view_graph_calibrator...")
+    view_graph_calibrate_cmd = [
+        colmap_command, "view_graph_calibrator",
+        "--log_level", str(log_level),
+        "--database_path", database_path,
+        "--cross_validate_prior_focal_lengths", "1",
+        "--min_calibrated_pair_ratio", "0.5",
+        "--reestimate_relative_pose", "1",
+        "--min_focal_length_ratio", "0.1",
+        "--max_focal_length_ratio", "10",
+        "--max_calibration_error", "2",
+        "--relpose_max_error", "1",
+        "--relpose_min_num_inliers", "30",
+        "--relpose_min_inlier_ratio", "0.25",
+    ]
+    run_subprocess(view_graph_calibrate_cmd, logger)
+    logger.info(f"View graph calibrate done in {view_graph_calibrate_time:.2f} s")
 view_graph_calibrate_time = time.time() - view_graph_calibrate_start
-logger.info(f"View graph calibrate done in {view_graph_calibrate_time:.2f} s")
+
 
 # ========================= Visualize matches (optional) =========================
 if args.visualize_matches:

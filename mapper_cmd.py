@@ -35,14 +35,14 @@ def get_incremental_mapper_cmd(colmap_command: str,
         "--Mapper.init_min_num_inliers", str(init_min_num_inliers), # 100
         "--Mapper.init_max_error", str(init_max_error), # 4
         "--Mapper.init_min_tri_angle", "16", # 16
-        "--Mapper.ba_local_min_tri_angle", "6", # 6
+        # "--Mapper.ba_local_min_tri_angle", "6", # 6
         "--Mapper.ba_local_num_images", "6", # 6
         "--Mapper.ba_local_max_num_iterations", str(ba_local_max_num_iterations), # 25
         "--Mapper.ba_local_max_refinements", str(ba_local_max_refinements), # 2
         "--Mapper.ba_local_max_refinement_change", str(ba_local_max_refinement_change), # 0.001
-        "--Mapper.ba_global_frames_ratio", str(ba_global_frames_ratio), # 1.1
+        "--Mapper.ba_global_images_ratio", str(ba_global_frames_ratio), # 1.1
         "--Mapper.ba_global_points_ratio", str(ba_global_points_ratio), # 1.1
-        "--Mapper.ba_global_frames_freq", str(ba_global_frames_freq), # 500
+        "--Mapper.ba_global_images_freq", str(ba_global_frames_freq), # 500
         "--Mapper.ba_global_points_freq", str(ba_global_points_freq), # 250000
         "--Mapper.ba_global_max_num_iterations", str(ba_global_max_num_iterations), # 50 --> 20 --> 25
         "--Mapper.ba_global_max_refinements", str(ba_global_max_refinements), # 5
@@ -51,7 +51,7 @@ def get_incremental_mapper_cmd(colmap_command: str,
         "--Mapper.ba_refine_principal_point", "0", # 0
         "--Mapper.ba_refine_extra_params", "1", # 1
         "--Mapper.max_extra_param", "1", # 1
-        "--Mapper.ba_use_gpu", str(use_gpu),  # 0
+        # "--Mapper.ba_use_gpu", str(use_gpu),  # 0
         "--Mapper.abs_pose_max_error", "12", # 12
         "--Mapper.abs_pose_min_num_inliers", str(abs_pose_min_num_inliers), # 30
         "--Mapper.abs_pose_min_inlier_ratio", str(abs_pose_min_inlier_ratio), # 0.25
