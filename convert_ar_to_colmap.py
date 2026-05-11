@@ -210,10 +210,12 @@ def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt", camera_model
     if intrinsics is not None:
         fx = intrinsics["fx"]
         fy = intrinsics["fy"]
-        cx = intrinsics["cx"]
-        cy = intrinsics["cy"]
+        # cx = intrinsics["cx"]
+        # cy = intrinsics["cy"]
         w = int(intrinsics["width"])
         h = int(intrinsics["height"])
+        cx = w / 2
+        cy = h / 2
 
         with open(cam_path, "w") as f:
             f.write("# Camera list\n")

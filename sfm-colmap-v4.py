@@ -55,13 +55,13 @@ parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree", "threshold"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_strategy", "-ms", type=str, default="custom", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="pose_prior_incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
@@ -80,6 +80,9 @@ parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--ar_pose_path", type=str, help="Path to AR pose file (if available)")
+parser.add_argument("--voxel_size", type=float, default=0.01, help="Voxel size for AR pose-based image pair generation")
+parser.add_argument("--max_angle", type=float, default=70, help="Maximum angle (in degrees) between camera views for AR pose-based image pair generation")
+parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for AR pose-based image pair generation")
 parser.add_argument("--refine_num", type=int, default=0, help="refine reconstruction iterations num")
 args = parser.parse_args()
 
@@ -129,6 +132,7 @@ logger.addHandler(fh)
 
 # ============================ Timeing variables ===============================
 start_time = time.time()
+pre_match_time = 0
 feature_extraction_time = 0
 feature_matching_time = 0
 view_graph_calibrate_time = 0
@@ -154,8 +158,8 @@ current_path = resource_path()
 print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
-    colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
+    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.2\\bin\\colmap.exe"
 else:
     colmap_path = "colmap"
@@ -211,43 +215,35 @@ use_gpu = 0 if args.no_gpu else 1
 
 # ============================ find matched pairs using slam pose (optional) ==========
 prior_focal_length = None
+prior_focal_factor = None
 if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
+    pre_match_start = time.time()
     logger.info(f"Finding image pairs based on AR poses from: {args.ar_pose_path}")
-    # pcd=load_point_cloud(os.path.join(args.ar_pose_path, "scan_all_pointcloud.ply"))
-    # poses=load_poses(os.path.join(args.ar_pose_path, "scan_all_pose.ply"))
-    # intrinsics=load_intrinsics(os.path.join(args.ar_pose_path, "scan_camera_intrinsics.txt"))
-    # build_frustum_overlap_voxel(
-    #     pcd=pcd,
-    #     poses=poses,
-    #     intrinsics=intrinsics,
-    #     output_txt=matched_images_pairs_path,
-    #     voxel_size=0.1,
-    #     max_pairs_per_image=args.max_matches_per_image,
-    #     overlap_thresh=0.5,
-    #     max_angle=np.radians(45)  # 45度视角约束
-    # )
 
     if not os.path.isabs(args.ar_pose_path):
         args.ar_pose_path = os.path.join(args.source_path, args.ar_pose_path)
-    prior_focal_length, images_list = compute_matched_image_pairs_by_pose_prior(
+    prior_focal_length, prior_focal_factor, images_list = compute_matched_image_pairs_by_pose_prior(
         args.ar_pose_path,
         matched_images_pairs_path,
-        voxel_size=0.1,
-        max_angle=70,
-        min_overlap=0.1,
+        voxel_size=args.voxel_size,
+        max_angle=args.max_angle,
+        min_overlap=args.min_overlap,
     )
     logger.info(
-        f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}"
+        f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}, prior focal factor: {prior_focal_factor}"
     )
+
+    args.default_focal_length_factor = prior_focal_factor
 
     for img_path in images_full_path:
         img_name = os.path.basename(img_path)
         if img_name not in images_list:
             logger.warning(f"Image {img_name} does not have ar-pose, please check consistency between AR pose file and input images")
             images_full_path.remove(img_path)
-
-    logger.info(f"Using {len(images_full_path)} images")
+    
     # input("Press Enter to continue with feature extraction and mapping using the AR pose-based image pairs...")
+    pre_match_time = time.time() - pre_match_start
+    logger.info(f"Using {len(images_full_path)} images, pre-matching time: {pre_match_time:.2f} s")
 
 # ========================= Feature extraction ==================================
 image_features = None
@@ -353,7 +349,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         aliked_lightglue_match_path = aliked_lightglue_match_path
     )
     run_subprocess(matches_importer_cmd, logger)
-    feature_matching_time = time.time() - match_start
+    feature_matching_time = time.time() - match_start + pre_match_time
     logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
 
 else:    
@@ -372,6 +368,25 @@ else:
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path
         )
+    elif args.match_strategy == "custom":
+        logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
+        
+        # Use matches_importer to import the sequential match list
+        feat_matching_cmd = get_matches_importer_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            matched_images_pairs_path=matched_images_pairs_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio
+        )        
+    
     elif args.match_strategy == "sequential":
         # Generate sequential match list with circular overlap
         logger.info("Generating sequential match pairs...")
@@ -418,8 +433,11 @@ else:
             vocab_feature_num=args.vocab_feature_num,
             vocab_path=vocab_path
         )
+    else:
+        logger.error(f"Unsupported match strategy: {args.match_strategy}")
+        sys.exit(1)
     run_subprocess(feat_matching_cmd, logger)
-    feature_matching_time = time.time() - match_start
+    feature_matching_time = time.time() - match_start + pre_match_time
     logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
 # ========================= Filter matches by inliers (optional) =========================

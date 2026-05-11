@@ -35,9 +35,9 @@ def compute_voxel_visibility_colmap(voxels, pose, camera):
     z = pts_cam[:, 2]
     valid = z > 0.1
 
-    pts_cam = pts_cam[valid]
+    pts_cam_filtered = pts_cam[valid]
 
-    if len(pts_cam) == 0:
+    if len(pts_cam_filtered) == 0:
         return np.zeros(len(voxels), dtype=bool)
 
     w, h = camera.width, camera.height
@@ -61,12 +61,13 @@ def compute_voxel_visibility_colmap(voxels, pose, camera):
         raise NotImplementedError(f"Unsupported camera model: {camera.model}")
 
 
-    u = fx * pts_cam[:, 0] / pts_cam[:, 2] + cx
-    v = fy * pts_cam[:, 1] / pts_cam[:, 2] + cy
+    u = fx * pts_cam_filtered[:, 0] / pts_cam_filtered[:, 2] + cx
+    v = fy * pts_cam_filtered[:, 1] / pts_cam_filtered[:, 2] + cy
 
     in_img = (u >= 0) & (u < w) & (v >= 0) & (v < h)
 
     vis = np.zeros(len(voxels), dtype=bool)
+    # Map filtered indices back to original voxels indices
     vis[np.where(valid)[0][in_img]] = True
 
     return vis
@@ -112,9 +113,34 @@ def compute_voxel_visibility(voxels, pose, intrinsics):
     return vis_mask
 
 def compute_voxel_overlap(vis1, vis2):
+    """计算两个可见性向量的 Jaccard 相似度（直接计算）"""
     inter = np.logical_and(vis1, vis2).sum()
     union = np.logical_or(vis1, vis2).sum()
     return inter / union if union > 0 else 0.0
+
+def compute_all_overlaps(vis_cache, pose_items):
+    """
+    预计算所有图像对的 overlap，使用上三角矩阵避免重复计算
+    返回: {(pose_i_name, pose_j_name): overlap_value, ...}
+    """
+    overlap_cache = {}
+    n = len(pose_items)
+    
+    for idx_i in range(n):
+        pose_i_name = pose_items[idx_i][1].name
+        vis_i = vis_cache[pose_i_name]
+        
+        for idx_j in range(idx_i + 1, n):
+            pose_j_name = pose_items[idx_j][1].name
+            vis_j = vis_cache[pose_j_name]
+            
+            # 计算 overlap，存储到缓存
+            inter = np.logical_and(vis_i, vis_j).sum()
+            union = np.logical_or(vis_i, vis_j).sum()
+            overlap = inter / union if union > 0 else 0.0
+            overlap_cache[(pose_i_name, pose_j_name)] = overlap
+    
+    return overlap_cache
 
 def get_camera_center_and_dir(pose):
     R = quat_to_rot(pose.qvec)
@@ -213,28 +239,34 @@ def build_frustum_overlap_voxel(
 def is_matchable_advanced(
     pose1,
     pose2,
-    vis_cache,
     max_angle=np.radians(70),
     min_overlap=0.1,
-    min_baseline=0.05,
-    max_baseline=10.0
+    camera_info_cache=None,
+    overlap_cache=None,
+    overlap_value=None
 ):
     """
-    vis_cache: dict[name] → visibility mask（提前算好）
+    camera_info_cache: dict[name] → (C, v) 相机中心和方向（可选，用于加速）
+    overlap_cache: dict[(name1, name2)] → overlap_value（可选，预计算的 overlap）
+    overlap_value: 直接传入的 overlap 值（可选，当已预计算时使用）
     """
 
     # -------------------------
     # 相机中心 & 方向
     # -------------------------
-    C1, v1 = get_camera_center_and_dir(pose1)
-    C2, v2 = get_camera_center_and_dir(pose2)
+    if camera_info_cache is not None:
+        C1, v1 = camera_info_cache[pose1.name]
+        C2, v2 = camera_info_cache[pose2.name]
+    else:
+        C1, v1 = get_camera_center_and_dir(pose1)
+        C2, v2 = get_camera_center_and_dir(pose2)
 
     # -------------------------
     # angle
     # -------------------------
     cos_theta = np.clip(np.dot(v1, v2), -1, 1)
     angle = np.arccos(cos_theta)
-    print(f"Angle between {pose1.name} and {pose2.name}: {np.degrees(angle):.2f} degrees")
+    # print(f"Angle between {pose1.name} and {pose2.name}: {np.degrees(angle):.2f} degrees")
     if angle > max_angle:
         return False
 
@@ -244,26 +276,16 @@ def is_matchable_advanced(
     # baseline = np.linalg.norm(C1 - C2)
     # if baseline < min_baseline or baseline > max_baseline:
     #     return False
-
     # -------------------------
-    # 朝向一致性
+    # 视锥 overlap（使用缓存或直接值）
     # -------------------------
-    # dir12 = (C2 - C1)
-    # dir12 /= np.linalg.norm(dir12)
-
-    # if np.dot(v1, dir12) < 0:
-    #     return False
-
-    # if np.dot(v2, -dir12) < 0:
-    #     return False
-
-    # -------------------------
-    # 视锥 overlap（核心）
-    # -------------------------
-    vis1 = vis_cache[pose1.name]
-    vis2 = vis_cache[pose2.name]
-
-    overlap = compute_voxel_overlap(vis1, vis2)
+    if overlap_value is not None:
+        overlap = overlap_value
+    elif overlap_cache is not None:
+        key = (pose1.name, pose2.name)
+        overlap = overlap_cache.get(key, 0.0)
+    else:
+        return False  # 没有 overlap 信息时无法判断
 
     if overlap < min_overlap:
         return False
@@ -326,6 +348,8 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
 
     # 读取 COLMAP 数据
     cameras, poses, points3D = read_model(pose_prior_path)
+    prior_focal_length = cameras[1].params[0]
+    prior_focal_factor = prior_focal_length / max(cameras[1].width, cameras[1].height)
 
     # 构建体素
     points3D_xyz = np.array([point.xyz for point in points3D.values()])
@@ -333,20 +357,42 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
 
     vis_cache = precompute_visibility(poses, cameras, voxels)
 
+    # 预计算所有相机的中心和方向（加速匹配）
+    camera_info_cache = {}
+    for _, pose in poses.items():
+        camera_info_cache[pose.name] = get_camera_center_and_dir(pose)
+
+    # 预计算所有对的 overlap 值（关键优化）
+    pose_items = list(poses.items())
+    overlap_cache = compute_all_overlaps(vis_cache, pose_items)
+    print(f"[INFO] Precomputed {len(overlap_cache)} overlap values")
+
     # 构建匹配图
     pairs = []
     images_list = []
+    
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(output_txt), exist_ok=True)
     with open(output_txt, "w") as f:
-        for img_id_i, pose_i in poses.items():
+        # 只遍历上三角，使用预计算的 overlap
+        for idx_i in range(len(pose_items)):
+            img_id_i, pose_i = pose_items[idx_i]
             images_list.append(pose_i.name)
-            for img_id_j, pose_j in poses.items():
-                if img_id_i >= img_id_j:
-                    continue
-                if is_matchable_advanced(pose_i, pose_j, vis_cache, max_angle=np.radians(max_angle), min_overlap=min_overlap):
+            
+            for idx_j in range(idx_i + 1, len(pose_items)):
+                img_id_j, pose_j = pose_items[idx_j]
+                # 从缓存中取 overlap 值
+                overlap_value = overlap_cache.get((pose_i.name, pose_j.name), 0.0)
+                
+                if is_matchable_advanced(
+                    pose_i, pose_j, 
+                    max_angle=np.radians(max_angle), 
+                    min_overlap=min_overlap, 
+                    camera_info_cache=camera_info_cache,
+                    overlap_value=overlap_value
+                ):
                     pairs.append((pose_i.name, pose_j.name))
                     f.write(f"{pose_i.name} {pose_j.name}\n")
     print(f"[INFO] Matched image pairs computed and saved to {output_txt}, total pairs: {len(pairs)}")
 
-    return cameras[1].params[0], images_list
+    return prior_focal_length, prior_focal_factor, images_list
