@@ -664,7 +664,7 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
         name2 = images_dict[image_id2]['filename']
         
         if verified_match_data is None:
-            # 没有验证的几何数据，保留但记录警告
+            # 没有验证的几何数据，删除并警告
             logger.warning(f"Pair {name1} - {name2}: No verified geometry data found, removing it")
             db.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
             db.execute("DELETE FROM two_view_geometries WHERE pair_id = ?", (pair_id,))

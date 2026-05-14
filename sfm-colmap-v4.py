@@ -65,7 +65,7 @@ parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="M
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
-parser.add_argument("--filt_match", action="store_false", help="Whether to filter matches by inliers before mapping")
+parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -160,7 +160,7 @@ if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
     colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
-    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.2\\bin\\colmap.exe"
+    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
 else:
     colmap_path = "colmap"
 
@@ -379,7 +379,7 @@ else:
             matched_images_pairs_path=matched_images_pairs_path,
             feature_match_type=feature_match_type,
             use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num,
+            max_feature_num=args.max_feature_num * 4,
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
