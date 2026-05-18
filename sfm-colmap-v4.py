@@ -57,15 +57,15 @@ parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="custom", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="pose_prior_incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
-parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
+parser.add_argument("--filt_match", action="store_false", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -340,7 +340,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         database_path=database_path,
         matched_images_pairs_path=matched_images_pairs_path,
         feature_match_type = feature_match_type, 
-        use_gpu = 1,
+        use_gpu = use_gpu,
         max_feature_num = args.max_feature_num,
         min_num_inliers = 30,
         min_inlier_ratio = 0.1,                             
@@ -605,6 +605,10 @@ elif args.mapper == "pose_prior_incremental":
     logger.info(f"Pose prior increment mapper bundle adjustment completed in {ba_time:.2f} s")
 elif args.mapper == "pose_prior_global":
     logger.info("Using global mapper with pose prior...")
+    max_normalized_reproj_error = 0.01
+    if prior_focal_length is not None:
+        max_normalized_reproj_error = 3 / prior_focal_length
+        logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
     mapper_cmd = get_pose_prior_global_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -628,7 +632,8 @@ elif args.mapper == "pose_prior_global":
         skip_retriangulation=0, # 0        
         ba_skip_joint_optimization_stage=0,
         max_angular_reproj_error_deg=1.0,
-        max_normalized_reproj_error=0.01        
+        max_normalized_reproj_error=max_normalized_reproj_error,
+        min_tri_angle_deg=1.0
     )
 elif args.mapper == "pose_prior":
     logger.info("Using incremental mapper with only images's position prior...")

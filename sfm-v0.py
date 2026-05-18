@@ -21,6 +21,7 @@ parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--source_path", "-s", required=True, type=str)
 parser.add_argument("--output_path", "-o", required=True, type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
+parser.add_argument("--feature_num", default=2048, type=int)
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--clean", action="store_true")
 args = parser.parse_args()
@@ -55,7 +56,8 @@ feat_extracton_cmd = colmap_command + " feature_extractor "\
     "--database_path " + output_path + "/distorted/database.db \
     --image_path " + args.source_path + "/input \
     --ImageReader.single_camera 1 \
-    --ImageReader.camera_model " + args.camera 
+    --SiftExtraction.max_num_features " + str(args.feature_num) + \
+    " --ImageReader.camera_model " + args.camera 
 exit_code = os.system(feat_extracton_cmd)
 if exit_code != 0:
     logging.error(f"Feature extraction failed with code {exit_code}. Exiting.")

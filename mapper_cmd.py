@@ -189,7 +189,14 @@ def get_global_mapper_cmd(colmap_command: str,
                    skip_retriangulation: int = 0,
                    gp_optimize_positions: int = 1,
                    gp_optimize_points: int = 1,
-                   gp_optimize_scales: int = 1):
+                   gp_optimize_scales: int = 1,
+                   tri_complete_max_reproj_error: int = 15,
+                   tri_merge_max_reproj_error: int = 15,
+                   tri_min_angle: int = 1,
+                   ra_max_rotation_error_deg: int = 10,
+                   max_angular_reproj_error_deg: int = 1,
+                   max_normalized_reproj_error: int = 0.01,
+                   globalMapper_min_tri_angle_deg: int = 1):
 
     mapper_cmd = [
         colmap_command, "global_mapper",
@@ -233,13 +240,13 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.ba_skip_fixed_points_stage", "1",         
         "--GlobalMapper.ba_skip_fixed_rotation_stage", "1", # 0
         "--GlobalMapper.ba_skip_joint_optimization_stage", "0",
-        "--GlobalMapper.tri_complete_max_reproj_error", "15",
-        "--GlobalMapper.tri_merge_max_reproj_error", "15",
-        "--GlobalMapper.tri_min_angle", "1", #1
-        "--GlobalMapper.ra_max_rotation_error_deg", "10",
-        "--GlobalMapper.max_angular_reproj_error_deg", "1",
-        "--GlobalMapper.max_normalized_reproj_error", "0.01",
-        "--GlobalMapper.min_tri_angle_deg", "1", #1
+        "--GlobalMapper.tri_complete_max_reproj_error", str(tri_complete_max_reproj_error),
+        "--GlobalMapper.tri_merge_max_reproj_error", str(tri_merge_max_reproj_error),
+        "--GlobalMapper.tri_min_angle", str(tri_min_angle), #1
+        "--GlobalMapper.ra_max_rotation_error_deg", str(ra_max_rotation_error_deg),
+        "--GlobalMapper.max_angular_reproj_error_deg", str(max_angular_reproj_error_deg),
+        "--GlobalMapper.max_normalized_reproj_error", str(max_normalized_reproj_error),
+        "--GlobalMapper.min_tri_angle_deg", str(globalMapper_min_tri_angle_deg), #1
     ]
     return mapper_cmd
 
@@ -511,6 +518,10 @@ def get_pose_prior_global_mapper_cmd(colmap_command: str,
                    ba_skip_joint_optimization_stage: int = 1,
                    skip_bundle_adjustment: int = 0, # 0
                    skip_retriangulation: int = 0, # 0
+                   tri_complete_max_reproj_error: int = 15,
+                   tri_merge_max_reproj_error: int = 15,
+                   tri_min_angle: int = 1,
+                   ra_max_rotation_error_deg: int = 10,                   
                    max_angular_reproj_error_deg: float = 1.0,
                    max_normalized_reproj_error: float = 0.01,
                    min_tri_angle_deg: float = 1.0
@@ -561,10 +572,10 @@ def get_pose_prior_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.ba_skip_fixed_points_stage", str(ba_skip_fixed_points_stage),        
         "--GlobalMapper.ba_skip_fixed_rotation_stage", str(ba_skip_fixed_rotation_stage),
         "--GlobalMapper.ba_skip_joint_optimization_stage", str(ba_skip_joint_optimization_stage),
-        "--GlobalMapper.tri_complete_max_reproj_error", "15",
-        "--GlobalMapper.tri_merge_max_reproj_error", "15",
-        "--GlobalMapper.tri_min_angle", "1", #1
-        "--GlobalMapper.ra_max_rotation_error_deg", "10",
+        "--GlobalMapper.tri_complete_max_reproj_error", str(tri_complete_max_reproj_error),
+        "--GlobalMapper.tri_merge_max_reproj_error", str(tri_merge_max_reproj_error),
+        "--GlobalMapper.tri_min_angle", str(tri_min_angle), #1
+        "--GlobalMapper.ra_max_rotation_error_deg", str(ra_max_rotation_error_deg),
         "--GlobalMapper.max_angular_reproj_error_deg", str(max_angular_reproj_error_deg), # 1
         "--GlobalMapper.max_normalized_reproj_error", str(max_normalized_reproj_error), # 0.01
         "--GlobalMapper.min_tri_angle_deg", str(min_tri_angle_deg), #1
