@@ -17,6 +17,7 @@ def get_feature_extractor_cmd(colmap_command: str,
                           single_camera: int = 1,
                           camera_model: str = "SIMPLE_RADIAL",
                           default_focal_length_factor: float = 0.9,
+                          camera_parameters: str = "",
                           use_gpu: int = 1,
                           max_image_size: int = 4096,
                           max_feature_num: int = 8192,
@@ -34,7 +35,7 @@ def get_feature_extractor_cmd(colmap_command: str,
         "--ImageReader.camera_model", camera_model,
         # "--ImageReader.mask_path", args.mask_path,
         # "--ImageReader.existing_camera_id", str(args.existing_camera_id),
-        # "--ImageReader.camera_params", args.camera_params,
+        "--ImageReader.camera_params", camera_parameters,
         "--ImageReader.default_focal_length_factor", str(default_focal_length_factor),
         # "--ImageReader.camera_mask_path", args.camera_mask_path,
         # "--FeatureExtraction.num_threads", str(args.num_threads),
@@ -241,7 +242,7 @@ def extract_neural_features(
     
     # Batch write all keypoints and descriptors to database (optimized - single transaction)
     logger.info(f"Writing {len(keypoints_to_write)} images' keypoints to database in batch mode...")
-    feature_type_int =  {"SIFT": 1, "ALIKED_N16ROT": 2, "ALIKED_N32": 3, "SUPERPOINT": 4}.get(feature_type.upper(), 0)
+    feature_type_int =  {"SIFT": 0, "ALIKED_N16ROT": 1, "ALIKED_N32": 2, "SUPERPOINT": 3}.get(feature_type.upper(), 0)
     logger.info(f"Feature type: {feature_type}, feature_type_int: {feature_type_int}")
     write_start = time.time()
     written_images = batch_write_keypoints_to_database(db, keypoints_to_write, feature_type=feature_type_int, logger=logger)

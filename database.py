@@ -121,7 +121,7 @@ def float_descriptors_to_uint8(descriptors: np.ndarray, descriptor_type: int) ->
     
     Args:
         descriptors: np.ndarray, shape=(N, D), dtype=float32
-        descriptor_type: int, 1=SIFT, 2=ALIKED_N16ROT, 3=ALIKED_N32
+        descriptor_type: int, 0=SIFT, 1=ALIKED_N16ROT, 2=ALIKED_N32
         
     Returns:
         np.ndarray, dtype=uint8
@@ -129,10 +129,9 @@ def float_descriptors_to_uint8(descriptors: np.ndarray, descriptor_type: int) ->
     # 确保输入是连续内存的float32
     data = np.ascontiguousarray(descriptors, dtype=np.float32)
     
-    if descriptor_type == 1:  # SIFT: 数值转换
-        return data.astype(np.uint8)
-    
-    elif descriptor_type in (2, 3):  # ALIKED: 内存重解释
+    if descriptor_type == 0:  # SIFT: 数值转换
+        return data.astype(np.uint8)    
+    elif descriptor_type in (1, 2):  # ALIKED: 内存重解释
         rows, cols = data.shape
         return data.view(np.uint8).reshape(rows, cols * 4)
     else:
@@ -186,9 +185,11 @@ class COLMAPDatabase(sqlite3.Connection):
         assert(keypoints.shape[1] in [2, 4, 6])
 
         keypoints = np.asarray(keypoints, np.float32)
+        keypoints_padded = np.zeros((keypoints.shape[0], 6), np.float32)
+        keypoints_padded[:, :keypoints.shape[1]] = keypoints
         self.execute(
             "INSERT INTO keypoints VALUES (?, ?, ?, ?)",
-            (image_id,) + keypoints.shape + (array_to_blob(keypoints),))
+            (image_id,) + keypoints_padded.shape + (array_to_blob(keypoints_padded),))
 
     # def add_descriptors(self, image_id, descriptors):
     #     descriptors = np.ascontiguousarray(descriptors, np.uint8)
@@ -665,7 +666,7 @@ def filter_matches_by_inliers(database_path, min_num_inliers=30, min_inlier_rati
         
         if verified_match_data is None:
             # 没有验证的几何数据，删除并警告
-            logger.warning(f"Pair {name1} - {name2}: No verified geometry data found, removing it")
+            # logger.warning(f"Pair {name1} - {name2}: No verified geometry data found, removing it")
             db.execute("DELETE FROM matches WHERE pair_id = ?", (pair_id,))
             db.execute("DELETE FROM two_view_geometries WHERE pair_id = ?", (pair_id,))
             removed_count += 1
@@ -786,23 +787,16 @@ def batch_write_keypoints_to_database(db, keypoints_list: list, feature_type: in
     try:
         cursor = db.cursor()
         
-        # Pre-process all keypoints: ensure correct data types
-        processed_keypoints = []
-        for image_id, keypoints, descriptors in keypoints_list:
-            keypoints = np.asarray(keypoints, np.float32)
-            descriptors = np.asarray(descriptors, np.uint8)  # COLMAP expects uint8
-            processed_keypoints.append((image_id, keypoints, descriptors))
-        
         # Begin transaction
         cursor.execute("BEGIN TRANSACTION")
         
         # Delete existing features for all images (batch delete)
-        for image_id, _, _ in processed_keypoints:
+        for image_id, _, _ in keypoints_list:
             cursor.execute("DELETE FROM keypoints WHERE image_id = ?", (image_id,))
             cursor.execute("DELETE FROM descriptors WHERE image_id = ?", (image_id,))
         
         # Add all new keypoints and descriptors (use database methods which handle encoding)
-        for image_id, keypoints, descriptors in processed_keypoints:
+        for image_id, keypoints, descriptors in keypoints_list:
             db.add_keypoints(image_id, keypoints)
             db.add_descriptors(image_id, descriptors, feature_type)
         
@@ -810,8 +804,8 @@ def batch_write_keypoints_to_database(db, keypoints_list: list, feature_type: in
         cursor.execute("COMMIT")
         db.commit()
         
-        logger.info(f"Batch wrote {len(processed_keypoints)} images' keypoints and descriptors to database")
-        return len(processed_keypoints)
+        logger.info(f"Batch wrote {len(keypoints_list)} images' keypoints and descriptors to database")
+        return len(keypoints_list)
         
     except Exception as e:
         logger.error(f"Failed to batch write keypoints to database: {e}")

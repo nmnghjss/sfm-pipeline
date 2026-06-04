@@ -48,24 +48,25 @@ parser.add_argument("--skip_matching", action='store_true')
 parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=str)
 parser.add_argument("--output_path", "-o", default="", type=str)
 parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
-parser.add_argument("--default_focal_length_factor", default=1.0, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
+parser.add_argument("--default_focal_length_factor", default=0.7042, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
+parser.add_argument("--camera_params", default="1352.2968362206273, 960, 540, 0.035388245198413666", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pose_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
-parser.add_argument("--filt_match", action="store_false", help="Whether to filter matches by inliers before mapping")
+parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -79,11 +80,12 @@ parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
-parser.add_argument("--ar_pose_path", type=str, help="Path to AR pose file (if available)")
+parser.add_argument("--pose_prior", type=str, help="Path to AR pose file (if available)")
 parser.add_argument("--voxel_size", type=float, default=0.01, help="Voxel size for AR pose-based image pair generation")
 parser.add_argument("--max_angle", type=float, default=70, help="Maximum angle (in degrees) between camera views for AR pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for AR pose-based image pair generation")
-parser.add_argument("--refine_num", type=int, default=0, help="refine reconstruction iterations num")
+parser.add_argument("--refine_num", type=int, default=1, help="refine reconstruction iterations num")
+parser.add_argument("--unify_output_images", action="store_true")
 args = parser.parse_args()
 
 
@@ -161,6 +163,8 @@ if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
     colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
+    # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
+    
 else:
     colmap_path = "colmap"
 
@@ -216,21 +220,21 @@ use_gpu = 0 if args.no_gpu else 1
 # ============================ find matched pairs using slam pose (optional) ==========
 prior_focal_length = None
 prior_focal_factor = None
-if args.ar_pose_path is not None and len(args.ar_pose_path) > 0:
+if args.pose_prior is not None and len(args.pose_prior) > 0:
     pre_match_start = time.time()
-    logger.info(f"Finding image pairs based on AR poses from: {args.ar_pose_path}")
+    logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
 
-    if not os.path.isabs(args.ar_pose_path):
-        args.ar_pose_path = os.path.join(args.source_path, args.ar_pose_path)
+    if not os.path.isabs(args.pose_prior):
+        args.pose_prior = os.path.join(args.source_path, args.pose_prior)
     prior_focal_length, prior_focal_factor, images_list = compute_matched_image_pairs_by_pose_prior(
-        args.ar_pose_path,
+        args.pose_prior,
         matched_images_pairs_path,
         voxel_size=args.voxel_size,
         max_angle=args.max_angle,
         min_overlap=args.min_overlap,
     )
     logger.info(
-        f"AR pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}, prior focal factor: {prior_focal_factor}"
+        f"prior-pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}, prior focal factor: {prior_focal_factor}"
     )
 
     args.default_focal_length_factor = prior_focal_factor
@@ -292,6 +296,7 @@ else:
         single_camera=int(args.single_camera),
         camera_model=args.camera,
         default_focal_length_factor=args.default_focal_length_factor,
+        camera_parameters=args.camera_params,
         use_gpu=use_gpu,
         max_image_size=args.max_image_size,
         max_feature_num=args.max_feature_num,
@@ -334,6 +339,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
     logger.info("Importing matches into COLMAP database using matches_importer...")
     logger.info(f"Match list path: {matched_images_pairs_path}")
     logger.info(f"Database path: {database_path}")
+    # feature_match_type = "SIFT_BRUTEFORCE"
     matches_importer_cmd = get_matches_importer_cmd(
         colmap_command=colmap_command,
         log_level = log_level, 
@@ -355,6 +361,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
 else:    
     match_start = time.time()
     if args.match_strategy == "exhaustive":
+        two_view_geometry_max_error = 2.0
         feat_matching_cmd = get_exhaustive_matcher_cmd(
             colmap_command=colmap_command,
             log_level=log_level,
@@ -366,7 +373,8 @@ else:
             min_inlier_ratio=min_inlier_ratio,
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            two_view_geometry_max_error=two_view_geometry_max_error
         )
     elif args.match_strategy == "custom":
         logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
@@ -458,14 +466,14 @@ view_graph_calibrate_cmd = [
     "--log_level", str(log_level),
     "--database_path", database_path,
     "--cross_validate_prior_focal_lengths", "1",
-    "--min_calibrated_pair_ratio", "0.5",
+    "--min_calibrated_pair_ratio", "0.7", # 0.5
     "--reestimate_relative_pose", "1",
     "--min_focal_length_ratio", "0.1",
     "--max_focal_length_ratio", "10",
-    "--max_calibration_error", "2",
-    "--relpose_max_error", "1",
-    "--relpose_min_num_inliers", "30",
-    "--relpose_min_inlier_ratio", "0.25",
+    "--max_calibration_error", "1", # 2
+    "--relpose_max_error", "1", # 1
+    "--relpose_min_num_inliers", "100", # 30
+    "--relpose_min_inlier_ratio", "0.1", # 0.25
 ]
 run_subprocess(view_graph_calibrate_cmd, logger)
 view_graph_calibrate_time = time.time() - view_graph_calibrate_start
@@ -543,6 +551,13 @@ elif args.mapper == "hierarchical_acc":
     )
 elif args.mapper == "global":
     logger.info("Using global mapper...")
+    ra_max_rotation_error_deg = 10.0
+    ra_max_rotation_error_final_deg = 5.0
+    ra_refilt_outlier_paisrs_num = 100
+    gp_max_num_iterations = 100
+    ba_ceres_max_num_iterations = 200
+    max_normalized_reproj_error = 0.01
+    globalMapper_min_tri_angle_deg = 1.0
     mapper_cmd = get_global_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -552,19 +567,27 @@ elif args.mapper == "global":
         use_gpu=use_gpu,
         min_num_inliers=min_num_inliers,
         ba_num_iterations=3,
-        gp_max_num_iterations=100,
-        ba_ceres_max_num_iterations=200
+        gp_max_num_iterations=gp_max_num_iterations,
+        ba_ceres_max_num_iterations=ba_ceres_max_num_iterations,
+        ra_max_rotation_error_deg=ra_max_rotation_error_deg,
+        ra_max_rotation_error_final_deg=ra_max_rotation_error_final_deg,
+        ra_refilt_outlier_paisrs_num=ra_refilt_outlier_paisrs_num,
+        max_normalized_reproj_error=max_normalized_reproj_error,
+        globalMapper_min_tri_angle_deg=globalMapper_min_tri_angle_deg,
+        tri_complete_max_reproj_error=10, #15
+        tri_merge_max_reproj_error=10, #15
+        tri_min_angle= 1, #1       
     )
 
 elif args.mapper == "pose_prior_incremental":
-    logger.info("Using ar-based incremental mapper...")
+    logger.info("Using prior-pose-based incremental mapper...")
     triangulate_cmd = get_points_triangulate_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
         database_path=database_path,
         images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
-        ar_pose_path=args.ar_pose_path,
+        pose_prior=args.pose_prior,
         min_num_inliers=min_num_inliers,
         tri_create_max_angle_error = 2.0, # 2.0
         tri_continue_max_angle_error = 2.0, # 2.0
@@ -605,6 +628,8 @@ elif args.mapper == "pose_prior_incremental":
     logger.info(f"Pose prior increment mapper bundle adjustment completed in {ba_time:.2f} s")
 elif args.mapper == "pose_prior_global":
     logger.info("Using global mapper with pose prior...")
+    ra_max_rotation_error_deg = 10.0
+    globalMapper_min_tri_angle_deg = 3.0    
     max_normalized_reproj_error = 0.01
     if prior_focal_length is not None:
         max_normalized_reproj_error = 3 / prior_focal_length
@@ -614,7 +639,7 @@ elif args.mapper == "pose_prior_global":
         log_level=log_level,
         database_path=database_path,
         images_path=images_dir,
-        prior_reconstruction_path=args.ar_pose_path,
+        prior_reconstruction_path=args.pose_prior,
         output_reconstruction_path=distorted_sparse_path,
         clear_points=1,
         use_gpu=use_gpu,
@@ -633,9 +658,13 @@ elif args.mapper == "pose_prior_global":
         ba_skip_joint_optimization_stage=0,
         max_angular_reproj_error_deg=1.0,
         max_normalized_reproj_error=max_normalized_reproj_error,
-        min_tri_angle_deg=1.0
+        ra_max_rotation_error_deg=ra_max_rotation_error_deg,
+        min_tri_angle_deg=globalMapper_min_tri_angle_deg,
+        tri_complete_max_reproj_error=5, #15
+        tri_merge_max_reproj_error=5, #15
+        tri_min_angle= 2, #1          
     )
-elif args.mapper == "pose_prior":
+elif args.mapper == "pos_prior":
     logger.info("Using incremental mapper with only images's position prior...")
     mapper_cmd = get_pose_prior_mapper_cmd(
         colmap_command=colmap_command,
@@ -645,8 +674,6 @@ elif args.mapper == "pose_prior":
         images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
-        abs_pose_min_num_inliers=min_num_inliers,
-        abs_pose_min_inlier_ratio=min_inlier_ratio,
         ba_local_max_num_iterations = 25,
         ba_local_max_refinements = 2,
         ba_local_max_refinement_change = 0.001,
@@ -687,25 +714,32 @@ else:
 
 if args.mapper != "pose_prior_incremental":
     run_subprocess(mapper_cmd, logger)
-
-if args.refine_num > 0:
-    refine_start = time.time()
-    refine_cmd = get_reconstruction_refine_cmd(colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        images_path=images_dir,
-        prior_reconstruction_path=distorted_sparse_path,
-        output_reconstruction_path=distorted_sparse_path,
-        clear_points=0,
-        use_gpu=use_gpu,
-        min_num_inliers=min_num_inliers,
-        ba_num_iterations=3,
-        gp_max_num_iterations=100,
-        ba_ceres_max_num_iterations=200)
-    for it in range(0, args.refine_num):
-        logger.info(f" {it + 1} / {args.refine_num} reconstruction refine")
-        run_subprocess(refine_cmd, logger)
-    refine_time = time.time() - refine_start        
+else:
+    if args.refine_num > 0:
+        refine_start = time.time()
+        max_normalized_reproj_error = 0.01
+        if prior_focal_length is not None:
+            max_normalized_reproj_error = 3 / prior_focal_length
+            logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
+        refine_cmd = get_reconstruction_refine_cmd(colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            images_path=images_dir,
+            prior_reconstruction_path=distorted_sparse_path,
+            output_reconstruction_path=distorted_sparse_path,
+            clear_points=0,
+            use_gpu=use_gpu,
+            min_num_inliers=min_num_inliers,
+            ba_num_iterations=3,
+            gp_max_num_iterations=100,
+            ba_ceres_max_num_iterations=200,
+            max_normalized_reproj_error=max_normalized_reproj_error,
+            tri_complete_max_reproj_error= 5.0,
+            tri_merge_max_reproj_error= 5.0)
+        for it in range(0, args.refine_num):
+            logger.info(f" {it + 1} / {args.refine_num} reconstruction refine")
+            run_subprocess(refine_cmd, logger)
+        refine_time = time.time() - refine_start        
 mapper_time = time.time() - mapper_start + view_graph_calibrate_time
 logger.info(f"Mapper done in {mapper_time:.2f} s")
 
@@ -750,32 +784,33 @@ img_num, _ = count_images_in_dir_recursive(os.path.join(output_path, "images"))
 logger.info("Sparse output successfully organized into sparse/0.")
 
 # ========================= Rename iamge name in colmap results and move all images to output/images (if needed) =========================
-logger.info("Moving images to output/images and updating names in sparse model ...")
-subdir_images_path = get_subfolders(os.path.join(output_path, "images"))
-for subdir in subdir_images_path:
-    move_files(subdir, os.path.join(output_path, "images"))
-    delete_directory(subdir)
+if args.unify_output_images:
+    logger.info("Moving images to output/images and updating names in sparse model ...")
+    subdir_images_path = get_subfolders(os.path.join(output_path, "images"))
+    for subdir in subdir_images_path:
+        move_files(subdir, os.path.join(output_path, "images"))
+        delete_directory(subdir)
 
-if len(subdir_images_path) > 0:
-    logger.info(f"Moved images from {len(subdir_images_path)} subdirectories to output/images and deleted the subdirectories")
-    images_result = os.path.join(output_path, "sparse/0", "images.bin")
-    images_backup = os.path.join(output_path, "sparse/0", "images_backup.bin")
-    os.rename(images_result, images_backup)
-    images = read_images_binary(images_backup)
-    for img_id, img in images.items():
-        img_name = img.name
-        img_path = os.path.join(output_path, "images", img_name)
-        # Update image name in COLMAP results to match the input image name
-        img_name = os.path.basename(img_path)
-        new_path = os.path.join(output_path, "images", img_name)
-        if not os.path.isfile(new_path):
-            logger.warning(f"Image file {new_path} does not exist, skipping image name update for image ID {img_id}")
-            continue
-        # Use _replace() to create a new Image object since namedtuple fields are immutable
-        images[img_id] = img._replace(name=img_name)
+    if len(subdir_images_path) > 0:
+        logger.info(f"Moved images from {len(subdir_images_path)} subdirectories to output/images and deleted the subdirectories")
+        images_result = os.path.join(output_path, "sparse/0", "images.bin")
+        images_backup = os.path.join(output_path, "sparse/0", "images_backup.bin")
+        os.rename(images_result, images_backup)
+        images = read_images_binary(images_backup)
+        for img_id, img in images.items():
+            img_name = img.name
+            img_path = os.path.join(output_path, "images", img_name)
+            # Update image name in COLMAP results to match the input image name
+            img_name = os.path.basename(img_path)
+            new_path = os.path.join(output_path, "images", img_name)
+            if not os.path.isfile(new_path):
+                logger.warning(f"Image file {new_path} does not exist, skipping image name update for image ID {img_id}")
+                continue
+            # Use _replace() to create a new Image object since namedtuple fields are immutable
+            images[img_id] = img._replace(name=img_name)
 
-    # Write the updated model back to disk
-    write_images_binary(images, images_result)
+        # Write the updated model back to disk
+        write_images_binary(images, images_result)
 
 
 # --------------------------

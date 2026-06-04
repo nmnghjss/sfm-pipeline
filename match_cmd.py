@@ -164,7 +164,8 @@ def get_exhaustive_matcher_cmd(colmap_command: str,
                              min_inlier_ratio: float,
                              sift_lightglue_match_path: str,
                              bruteforce_match_path: str,
-                             aliked_lightglue_match_path: str):
+                             aliked_lightglue_match_path: str,
+                             two_view_geometry_max_error: int=4.0):
 
     exhaustive_matcher_cmd = [
         colmap_command, "exhaustive_matcher",
@@ -200,7 +201,7 @@ def get_exhaustive_matcher_cmd(colmap_command: str,
         "--TwoViewGeometry.watermark_detection_max_error", "4",
         "--TwoViewGeometry.filter_stationary_matches", "0",
         "--TwoViewGeometry.stationary_matches_max_error", "4",
-        "--TwoViewGeometry.max_error", "4",
+        "--TwoViewGeometry.max_error", str(two_view_geometry_max_error),
         "--TwoViewGeometry.confidence", "0.999",
         "--TwoViewGeometry.max_num_trials", "10000",
         "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio), # 0.25

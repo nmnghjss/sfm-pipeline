@@ -21,7 +21,7 @@ parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--source_path", "-s", required=True, type=str)
 parser.add_argument("--output_path", "-o", required=True, type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
-parser.add_argument("--feature_num", default=2048, type=int)
+parser.add_argument("--feature_num", default=8192, type=int)
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--clean", action="store_true")
 args = parser.parse_args()
@@ -53,6 +53,7 @@ os.makedirs(output_path + "/distorted/sparse", exist_ok=True)
 ## Feature extraction
 extract_start = time.time()
 feat_extracton_cmd = colmap_command + " feature_extractor "\
+    "--SiftExtraction.use_gpu " + str(use_gpu) + " " \
     "--database_path " + output_path + "/distorted/database.db \
     --image_path " + args.source_path + "/input \
     --ImageReader.single_camera 1 \
@@ -66,8 +67,9 @@ extract_time = time.time() - extract_start
 
 ## Feature matching
 match_start = time.time()
-feat_matching_cmd = colmap_command + " exhaustive_matcher \
-    --database_path " + output_path + "/distorted/database.db"
+feat_matching_cmd = colmap_command + " exhaustive_matcher " + \
+    " --SiftMatching.use_gpu " + str(use_gpu) + " " \
+    "--database_path " + output_path + "/distorted/database.db"
 exit_code = os.system(feat_matching_cmd)
 if exit_code != 0:
     logging.error(f"Feature matching failed with code {exit_code}. Exiting.")

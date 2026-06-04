@@ -193,9 +193,11 @@ def get_global_mapper_cmd(colmap_command: str,
                    tri_complete_max_reproj_error: int = 15,
                    tri_merge_max_reproj_error: int = 15,
                    tri_min_angle: int = 1,
-                   ra_max_rotation_error_deg: int = 10,
+                   ra_max_rotation_error_deg: float = 10.0,
+                   ra_max_rotation_error_final_deg: float = 10.0,
+                   ra_refilt_outlier_paisrs_num: int = 100,
                    max_angular_reproj_error_deg: int = 1,
-                   max_normalized_reproj_error: int = 0.01,
+                   max_normalized_reproj_error: float = 0.01,
                    globalMapper_min_tri_angle_deg: int = 1):
 
     mapper_cmd = [
@@ -209,8 +211,7 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.ignore_watermarks", "0",
         "--GlobalMapper.num_threads", "-1",
         "--GlobalMapper.random_seed", "-1",
-        "--GlobalMapper.decompose_relative_pose", "1",
-        "--GlobalMapper.ba_num_iterations", str(ba_num_iterations),
+        "--GlobalMapper.decompose_relative_pose", "1",        
         "--GlobalMapper.skip_rotation_averaging", str(skip_rotation_averaging), # 0
         "--GlobalMapper.skip_track_establishment", str(skip_track_establishment), # 0
         "--GlobalMapper.skip_global_positioning", str(skip_global_positioning), # 0
@@ -226,6 +227,7 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.gp_optimize_scales", str(gp_optimize_scales),
         "--GlobalMapper.gp_loss_function_scale", "0.1",
         "--GlobalMapper.gp_max_num_iterations", str(gp_max_num_iterations), # 100
+        "--GlobalMapper.ba_num_iterations", str(ba_num_iterations),
         "--GlobalMapper.ba_refine_focal_length", "1",
         "--GlobalMapper.ba_refine_principal_point", "0",
         "--GlobalMapper.ba_refine_extra_params", "1",
@@ -238,12 +240,14 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.ba_ceres_loss_function_scale", "1",
         "--GlobalMapper.ba_ceres_max_num_iterations", str(ba_ceres_max_num_iterations),
         "--GlobalMapper.ba_skip_fixed_points_stage", "1",         
-        "--GlobalMapper.ba_skip_fixed_rotation_stage", "1", # 0
+        "--GlobalMapper.ba_skip_fixed_rotation_stage", "0", # 0
         "--GlobalMapper.ba_skip_joint_optimization_stage", "0",
         "--GlobalMapper.tri_complete_max_reproj_error", str(tri_complete_max_reproj_error),
         "--GlobalMapper.tri_merge_max_reproj_error", str(tri_merge_max_reproj_error),
         "--GlobalMapper.tri_min_angle", str(tri_min_angle), #1
         "--GlobalMapper.ra_max_rotation_error_deg", str(ra_max_rotation_error_deg),
+        "--GlobalMapper.ra_max_rotation_error_final_deg", str(ra_max_rotation_error_final_deg),
+        "--GlobalMapper.ra_refilt_outlier_paisrs_num", str(ra_refilt_outlier_paisrs_num),
         "--GlobalMapper.max_angular_reproj_error_deg", str(max_angular_reproj_error_deg),
         "--GlobalMapper.max_normalized_reproj_error", str(max_normalized_reproj_error),
         "--GlobalMapper.min_tri_angle_deg", str(globalMapper_min_tri_angle_deg), #1
@@ -358,7 +362,7 @@ def get_points_triangulate_cmd(colmap_command: str,
                              database_path: str,
                              images_path: str,
                              distorted_sparse_path: str,
-                             ar_pose_path: str,
+                             pose_prior: str,
                              min_num_inliers: int = 30,
                              tri_create_max_angle_error: float = 2.0,
                              tri_continue_max_angle_error: float = 2.0,
@@ -373,7 +377,7 @@ def get_points_triangulate_cmd(colmap_command: str,
         colmap_command, "point_triangulator",
         "--database_path", database_path,
         "--image_path", images_path,
-        "--input_path", ar_pose_path,
+        "--input_path", pose_prior,
         "--output_path", distorted_sparse_path,
         "--log_level", str(log_level),
         "--clear_points", "1",              
@@ -606,7 +610,9 @@ def get_reconstruction_refine_cmd(colmap_command: str,
                    skip_retriangulation: int = 0, # 0
                    max_angular_reproj_error_deg: float = 1.0,
                    max_normalized_reproj_error: float = 0.01,
-                   min_tri_angle_deg: float = 1.0
+                   min_tri_angle_deg: float = 1.0,
+                   tri_complete_max_reproj_error: float = 15.0,
+                   tri_merge_max_reproj_error: float = 15.0,
                    ):
 
     mapper_cmd = [
@@ -654,8 +660,8 @@ def get_reconstruction_refine_cmd(colmap_command: str,
         "--GlobalMapper.ba_skip_fixed_points_stage", str(ba_skip_fixed_points_stage),        
         "--GlobalMapper.ba_skip_fixed_rotation_stage", str(ba_skip_fixed_rotation_stage),
         "--GlobalMapper.ba_skip_joint_optimization_stage", str(ba_skip_joint_optimization_stage),
-        "--GlobalMapper.tri_complete_max_reproj_error", "15",
-        "--GlobalMapper.tri_merge_max_reproj_error", "15",
+        "--GlobalMapper.tri_complete_max_reproj_error", str(tri_complete_max_reproj_error),
+        "--GlobalMapper.tri_merge_max_reproj_error", str(tri_merge_max_reproj_error),
         "--GlobalMapper.tri_min_angle", "1", #1
         "--GlobalMapper.ra_max_rotation_error_deg", "10",
         "--GlobalMapper.max_angular_reproj_error_deg", str(max_angular_reproj_error_deg), # 1

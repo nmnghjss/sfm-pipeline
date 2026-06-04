@@ -154,7 +154,7 @@ def umeyama_align_ransac(X_dict, Y_dict, with_scale=True, max_iters=1000, inlier
         # 计算并打印dists的统计信息
         mean_dist = np.mean(dists)
         std_dist = np.std(dists)
-        print(f"colmap与 gps 对齐后，距离误差统计信息: 均值={mean_dist:.3f} 米, 标准差={std_dist:.3f} 米")
+        print(f"图像坐标 对齐后，距离误差统计信息: 均值={mean_dist:.3f} 米, 标准差={std_dist:.3f} 米")
         inliers = dists <= inlier_threshold
         count = int(inliers.sum())
         
@@ -353,7 +353,7 @@ def align_and_compute_error(base_images_pose:dict, update_images_pose:dict, visu
 
 
     ransac_max_iters = 1000
-    inlier_threshold = 0.1  # 米
+    inlier_threshold = 2  # 米
     min_inliers = max(3, int(0.5 * len(base_images_pos)))  # 至少3个内点，或50%的点
     scale, R_align, shift, inliers = umeyama_align_ransac(base_images_pos, update_images_pos, max_iters=ransac_max_iters, inlier_threshold=inlier_threshold, min_inliers=min_inliers)
     print("scale:", scale)
@@ -391,8 +391,8 @@ if __name__ == "__main__":
     args = args.parse_args()
 
     try:
-        base_cameras, base_images, base_points3D = read_model(args.colmap_output_base, ext=".txt")
-        update_cameras, update_images, update_points3D = read_model(args.colmap_output_update, ext=".bin")
+        base_cameras, base_images, base_points3D = read_model(args.colmap_output_base)
+        update_cameras, update_images, update_points3D = read_model(args.colmap_output_update)
 
         errors = align_and_compute_error(base_images, update_images, visualize=args.visualize)
         print("Pose error:", vars(errors) if errors is not None else "No error computed.")

@@ -412,12 +412,9 @@ if __name__ == '__main__':
     # parser.add_argument("--skyball", action='store_true', default=False, help='添加天空球到点云')
     # parser.add_argument("--skyball_points", type=int, default=10000, help='天空球点数')
 
-    parser.add_argument("--sift_match_strategy", "-sms", type=str, default="acc", choices=["default", "acc", "sequential", "vocab_tree"], help="Matching strategy for SIFT features")
-    parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
-
     parser.add_argument("--dataset_root", "-ds", type=str, default="dataset", help='数据集根目录')
-    parser.add_argument("--output_name", "-o", type=str, default="output-colmap314-aliked-16rot-vocab_tree-match=0309", help='3DGS模型输出目录')
-    parser.add_argument("--metrics_file_name", "-mf", type=str, default="metric_colmap314-aliked-16rot-vocab_tree-match_acc-check0309-4.csv", help='保存所有数据集时间和指标的csv文件名')
+    parser.add_argument("--output_name", "-o", type=str, default="output-sfm-aliked-threshold-acc")
+    parser.add_argument("--metrics_file_name", "-mf", type=str, default="metric_sfm-aliked-threshold-acc.csv", help='保存所有数据集时间和指标的csv文件名')
 
     args = parser.parse_args()
     # args.save_iterations.append(args.iterations)
@@ -443,9 +440,9 @@ if __name__ == '__main__':
         print(f"Processing dataset at: {os.path.dirname(dataset_dir)}")
 
         metrics_path = os.path.join(project_dir, "metrics.txt")
-        if load_metrics_from_txt(project_dir, project_name, time_and_metrics_list):
-            print(f"Loaded existing metrics for {project_name} from {metrics_path}; skipping reprocessing.")
-            continue
+        # if load_metrics_from_txt(project_dir, project_name, time_and_metrics_list):
+        #     print(f"Loaded existing metrics for {project_name} from {metrics_path}; skipping reprocessing.")
+        #     continue
 
         os.makedirs(project_dir, exist_ok=True)        
 
@@ -463,7 +460,7 @@ if __name__ == '__main__':
             # sfm_command = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms acc "
             # sfm_command = "python sfm-v7.py --alg acc --max_feature_num 8192  -sms sequential "
             # sfm_command = "python sfm-v6.py --alg acc --max_feature_num 2048 -splg --clean "
-            sfm_command = "python sfm-colmap-4.0.py --clean "
+            sfm_command = "python sfm-colmap-v4.py --clean"
             # sfm_command = sfm_pipeline_exe + " --alg acc -sms " + args.sift_match_strategy + " -so " + str(args.sequential_overlap) + " "
             sfm_output_dir = project_dir
             sfm_with_colmap(sfm_command, data_path, sfm_output_dir)   
