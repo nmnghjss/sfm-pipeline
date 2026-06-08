@@ -196,7 +196,12 @@ def visualize(pcd, poses, intrinsics):
     vis.run()
     vis.destroy_window()
 
-def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt", camera_model="SIMPLE_RADIAL"):
+def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt", camera_model="SIMPLE_RADIAL", vertical=False):
+    """
+    导出到COLMAP格式
+    c2w→w2c + 必要的180°相机前向修正
+    portrait: 手机是否竖屏拍摄（横竖屏差90°，需额外旋转）
+    """
     """
     fmt: "txt" or "bin"
     """
@@ -241,19 +246,26 @@ def export_to_colmap(pcd, poses, intrinsics, output_dir, fmt="txt", camera_model
         f.write("# IMAGE_ID, QW, QX, QY, QZ, TX, TY, TZ, CAMERA_ID, NAME\n")
         f.write("# POINTS2D[] as (X, Y, POINT3D_ID)\n\n")
 
+        FLIP_YZ = np.diag([1, -1, -1])
+
         for i, pose in enumerate(poses):
             R = quat_to_rot(pose["q"])
             t = pose["t"]
 
-            # c2w → w2c
+            # 手机横竖屏差90°（仅竖屏时执行）
+            if vertical:
+                theta = np.radians(90)
+                c, s = np.cos(theta), np.sin(theta)
+                R_z90 = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+                R = R @ R_z90  # 绕相机Z轴旋转90°（修正横竖屏）
+            # c2w → w2c 转换
             R_w2c = R.T
             t_w2c = -R_w2c @ t
-
-            # AR → COLMAP
-            FLIP_Z = np.diag([1, -1, -1])
-            R_w2c = FLIP_Z @ R_w2c
-            t_w2c = FLIP_Z @ t_w2c
-
+            # 绕X轴180°翻转（修正AR相机前向-Z → COLMAP前向+Z）
+            R_fix = np.diag([1.0, -1.0, -1.0])
+            R_w2c = R_fix @ R_w2c
+            t_w2c = R_fix @ t_w2c
+                
             qw, qx, qy, qz = rot_to_quat(R_w2c)
 
             name = pose["name"]
@@ -313,6 +325,7 @@ if __name__ == "__main__":
     argpaser.add_argument("--output", type=str, required=True)
     argpaser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
     argpaser.add_argument("--vis", action="store_true")
+    argpaser.add_argument("--vertical", action="store_true", help="手机竖屏拍摄（横竖屏差90°）")
 
     args = argpaser.parse_args()
 
@@ -334,7 +347,7 @@ if __name__ == "__main__":
 
     os.makedirs(output_path, exist_ok=True)
 
-    export_to_colmap(pcd, poses, intrinsics, output_path, fmt="txt")
+    export_to_colmap(pcd, poses, intrinsics, output_path, fmt="txt", vertical=args.vertical)
 
     keyframesDir = os.path.join(args.input, "FrameExtraction")
     if os.path.exists(keyframesDir):

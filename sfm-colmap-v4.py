@@ -44,12 +44,13 @@ from read_write_model import read_images_binary, write_images_binary
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
-parser.add_argument("--skip_matching", action='store_true')
+parser.add_argument("--ba_local_backend", default="CERES", type=str, choices=["CERES", "CASPAR"], help="Local BA backend (e.g., Ceres, g2o)")
+parser.add_argument("--ba_global_backend", default="CERES", type=str, choices=["CERES", "CASPAR"], help="Global BA backend (e.g., Ceres, g2o)")
 parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=str)
 parser.add_argument("--output_path", "-o", default="", type=str)
 parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
 parser.add_argument("--default_focal_length_factor", default=0.7042, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
-parser.add_argument("--camera_params", default="1352.2968362206273, 960, 540, 0.035388245198413666", type=str, help="Camera parameters for COLMAP")
+parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
@@ -61,7 +62,7 @@ parser.add_argument("--max_image_size", type=int, default=-1, help="maximum imag
 parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="pose_prior_incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
@@ -80,7 +81,7 @@ parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
-parser.add_argument("--pose_prior", type=str, help="Path to AR pose file (if available)")
+parser.add_argument("--pose_prior", type=str, default="pose_prior_SIMPLE_RADIAL_DA3", help="Path to AR pose file (if available)")
 parser.add_argument("--voxel_size", type=float, default=0.01, help="Voxel size for AR pose-based image pair generation")
 parser.add_argument("--max_angle", type=float, default=70, help="Maximum angle (in degrees) between camera views for AR pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for AR pose-based image pair generation")
@@ -361,7 +362,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
 else:    
     match_start = time.time()
     if args.match_strategy == "exhaustive":
-        two_view_geometry_max_error = 2.0
+        two_view_geometry_max_error = 3.0
         feat_matching_cmd = get_exhaustive_matcher_cmd(
             colmap_command=colmap_command,
             log_level=log_level,
@@ -506,6 +507,8 @@ if args.mapper == "acc":
         images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
+        ba_local_backend=args.ba_local_backend,
+        ba_global_backend=args.ba_global_backend,
         ba_local_max_num_iterations=15,
         ba_local_max_refinements=2,
         ba_local_max_refinement_change=0.001,
@@ -700,6 +703,8 @@ else:
         images_path=images_dir,
         distorted_sparse_path=distorted_sparse_path,
         use_gpu=use_gpu,
+        ba_local_backend=args.ba_local_backend,
+        ba_global_backend=args.ba_global_backend,        
         ba_local_max_num_iterations=25,
         ba_local_max_refinements=2,
         ba_local_max_refinement_change=0.001,
