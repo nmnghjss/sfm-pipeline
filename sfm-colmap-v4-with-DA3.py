@@ -4,6 +4,8 @@ import logging
 from argparse import ArgumentParser
 import shutil
 import time
+from PIL import Image
+import glob
 from datetime import datetime
 from mapper_cmd import (
     get_ba_cmd,
@@ -50,7 +52,7 @@ parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=
 parser.add_argument("--output_path", "-o", default="", type=str)
 parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
 parser.add_argument("--default_focal_length_factor", default=1.0, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
-parser.add_argument("--camera_params", default=None, type=str, help="Camera parameters for COLMAP")
+parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
@@ -59,13 +61,14 @@ parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="pose_prior_incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
+parser.add_argument("--two_view_geometry_max_error", type=float, default=8.0, help="Maximum reprojection error (in pixels) for two-view geometry verification during matching")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
@@ -73,15 +76,15 @@ parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help=
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
-parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
-parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
+parser.add_argument("--external_feature", action="store_false", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
+parser.add_argument("--external_match", action="store_false", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
-parser.add_argument("--pose_prior", type=str, default=None, help="Path to AR pose file (if available)")
+parser.add_argument("--pose_prior", type=str, default="da3-large-output", help="Path to AR pose file (if available)")
 parser.add_argument("--voxel_size", type=float, default=0.01, help="Voxel size for AR pose-based image pair generation")
 parser.add_argument("--max_angle", type=float, default=70, help="Maximum angle (in degrees) between camera views for AR pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for AR pose-based image pair generation")
@@ -108,6 +111,141 @@ def resource_path() -> str:
     except AttributeError:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return base_path
+
+def get_pose_with_DA3(da3_exe_path: str, da3_model_path: str, project_dir: str, output_dir: str):
+    get_pose_cmd = f"{da3_exe_path} -s {project_dir} -m {da3_model_path} -o {output_dir}"
+    print(f"get pose with DA3 cmd: {get_pose_cmd}")
+    exit_code = os.system(get_pose_cmd)
+    if exit_code != 0:
+        logging.error(f"get pose with DA3 failed with code {exit_code}. Exiting.")
+        exit(exit_code)
+    else:
+        logging.info("get pose with DA3 successful")
+        return 0
+
+
+# ==============================================================================
+#  6. 根据实际图像尺寸更新 cameras.txt 中的相机内参
+# ==============================================================================
+
+def update_camera_intrinsics_from_image(input_dir, da3_output_dir):
+    """
+    从 input_dir 中读取一张实际图像获取长宽，然后修改 da3_output_dir 中
+    cameras.txt 的相机模型为 SIMPLE_RADIAL，并根据实际图像尺寸重新计算参数。
+
+    参数:
+        input_dir:       包含实际拍摄图像的目录（递归查找）
+        da3_output_dir:  COLMAP 模型目录，内含 cameras.txt
+    """
+    cameras_path = os.path.join(da3_output_dir, "cameras.txt")
+    if not os.path.exists(cameras_path):
+        print(f"[WARN] cameras.txt not found at: {cameras_path}")
+        return
+
+    # --- 1. 查找一张实际图像 ---
+    img_exts = ("*.jpg", "*.jpeg", "*.png", "*.JPG", "*.JPEG", "*.PNG")
+    image_files = []
+    for ext in img_exts:
+        image_files.extend(glob.glob(os.path.join(input_dir, "**", ext), recursive=True))
+
+    if not image_files:
+        print(f"[WARN] No image found in: {input_dir}")
+        return
+
+    img = Image.open(image_files[0])
+    actual_w, actual_h = img.size
+    print(f"[INFO] Read actual image: {os.path.basename(image_files[0])} "
+          f"({actual_w}×{actual_h})")
+
+    # --- 2. 读取 cameras.txt ---
+    with open(cameras_path, "r") as f:
+        lines = f.readlines()
+
+    # --- 3. 找到第一个数据行（非注释、非空行）并修改 ---
+    modified = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        parts = stripped.split()
+        if len(parts) < 5:
+            continue
+
+        camera_id = int(parts[0])
+        old_model = parts[1]
+        old_w = int(parts[2])
+        old_h = int(parts[3])
+        old_params = list(map(float, parts[4:]))
+
+        # 提取当前焦距（根据模型不同，fx/fy 位置不同）
+        if old_model == "PINHOLE":
+            fx, fy = old_params[0], old_params[1]
+        elif old_model in ("SIMPLE_PINHOLE", "SIMPLE_RADIAL", "RADIAL"):
+            fx = fy = old_params[0]
+        else:
+            fx = fy = old_params[0]  # 兜底
+
+        # 计算新参数
+        # 焦距 = (实际宽度 / 当前宽度) × (fx 和 fy 的均值)
+        new_f = (actual_w / old_w) * ((fx + fy) / 2.0)
+        new_cx = actual_w / 2.0
+        new_cy = actual_h / 2.0
+        new_k = 0.0  # 畸变系数
+
+        # SIMPLE_RADIAL 参数: f, cx, cy, k
+        new_line = (
+            f"{camera_id} SIMPLE_RADIAL {actual_w} {actual_h} "
+            f"{new_f:.4f} {new_cx:.1f} {new_cy:.1f} {new_k:.6f}\n"
+        )
+        lines[i] = new_line
+
+        print(
+            f"[INFO] Updated cameras.txt line {i + 1}: "
+            f"model {old_model} → SIMPLE_RADIAL, "
+            f"size {old_w}×{old_h} → {actual_w}×{actual_h}, "
+            f"f=({fx:.2f}, {fy:.2f}) → {new_f:.2f}, "
+            f"cx/cy=({old_params[-2]:.2f}, {old_params[-1]:.2f}) → ({new_cx:.2f}, {new_cy:.2f})"
+        )
+        modified = True
+        break
+
+    if not modified:
+        print("[WARN] No camera data line found in cameras.txt")
+        return
+
+    # --- 4. 写回 ---
+    with open(cameras_path, "w") as f:
+        f.writelines(lines)
+
+    print(f"[INFO] cameras.txt updated at: {cameras_path}")
+
+
+# ==============================================================================
+#  7. 将各阶段耗时写入 txt 文件
+# ==============================================================================
+
+def write_timing_statistics(output_dir, **timings):
+    """
+    将流水线各阶段耗时写入 sfm_time_statistic.txt。
+
+    参数:
+        output_dir: 输出目录路径
+        **timings:  键值对，键为阶段名称，值为耗时（秒）或数量
+    """
+    filepath = os.path.join(output_dir, "sfm_time_statistic.txt")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("SfM Pipeline Timing Statistics\n")
+        f.write("=" * 60 + "\n\n")
+        for label, value in timings.items():
+            if isinstance(value, (int, float)):
+                # minutes = int(value // 60)
+                # seconds = value % 60
+                f.write(f"{label}: {value:.2f} s\n")
+            else:
+                f.write(f"{label}: {value}\n")
+    print(f"[INFO] Timing statistics saved to: {filepath}")
+
 
 # ============================ Logging setup ===============================
 log_level = args.log_level
@@ -161,8 +299,8 @@ current_path = resource_path()
 print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
-    # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     
@@ -222,7 +360,21 @@ use_gpu = 0 if args.no_gpu else 1
 prior_focal_length = None
 prior_focal_factor = None
 if args.pose_prior is not None and len(args.pose_prior) > 0:
+    
+    # =========================Get pose with DA3========================================================================
+    da3_start_time = time.time()
+    da3_exe_path = os.path.join(current_path, "DA3_PoseExport/DA3_PoseExport.exe")
+    da3_model_path = os.path.join(current_path, "DA3_PoseExport/models/DA3-LARGE-1.1")
+    da3_output_path = os.path.join(args.source_path, args.pose_prior)
+    ret_da3 = get_pose_with_DA3(da3_exe_path, da3_model_path, images_dir, da3_output_path)
+    da3_elapsed = time.time() - da3_start_time
+
+    move_files(os.path.join(da3_output_path, "sparse/0"), da3_output_path, True)
+
     pre_match_start = time.time()
+    update_camera_intrinsics_from_image(images_dir, da3_output_path)
+
+    
     logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
 
     if not os.path.isabs(args.pose_prior):
@@ -257,13 +409,6 @@ if args.external_feature:
     
     # Initialize COLMAP database with images (without SIFT extraction)
     logger.info("Initializing COLMAP database with image metadata (without feature extraction)...")
-    
-    # Parse camera_params from comma-separated string to list of floats
-    _camera_params = None
-    if args.camera_params and isinstance(args.camera_params, str) and args.camera_params.strip():
-        _camera_params = [float(x.strip()) for x in args.camera_params.split(',')]
-        logger.info(f"Parsed camera_params: {_camera_params}")
-    
     splg_start = time.time()    
     db_init_success = initialize_colmap_database(
         database_path=database_path,
@@ -272,7 +417,6 @@ if args.external_feature:
         camera_model=args.camera,
         prior_fx=prior_focal_length,
         prior_fy=prior_focal_length,
-        camera_params=_camera_params,
         logger=logger
     )    
     if not db_init_success:
@@ -349,6 +493,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
     logger.info(f"Match list path: {matched_images_pairs_path}")
     logger.info(f"Database path: {database_path}")
     # feature_match_type = "SIFT_BRUTEFORCE"
+    two_view_geometry_max_error = args.two_view_geometry_max_error
     matches_importer_cmd = get_matches_importer_cmd(
         colmap_command=colmap_command,
         log_level = log_level, 
@@ -358,7 +503,8 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         use_gpu = use_gpu,
         max_feature_num = args.max_feature_num,
         min_num_inliers = 30,
-        min_inlier_ratio = 0.1,                             
+        min_inlier_ratio = 0.1,              
+        two_view_geometry_max_error = two_view_geometry_max_error,               
         sift_lightglue_match_path = sift_lightglue_match_path,
         bruteforce_match_path = bruteforce_match_path,
         aliked_lightglue_match_path = aliked_lightglue_match_path
@@ -370,7 +516,6 @@ if image_features is not None and (args.external_match or args.match_strategy ==
 else:    
     match_start = time.time()
     if args.match_strategy == "exhaustive":
-        two_view_geometry_max_error = 3.0
         feat_matching_cmd = get_exhaustive_matcher_cmd(
             colmap_command=colmap_command,
             log_level=log_level,
@@ -383,7 +528,7 @@ else:
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
-            two_view_geometry_max_error=two_view_geometry_max_error
+            two_view_geometry_max_error=args.two_view_geometry_max_error
         )
     elif args.match_strategy == "custom":
         logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
@@ -401,7 +546,8 @@ else:
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
             min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio
+            min_inlier_ratio=min_inlier_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error
         )        
     
     elif args.match_strategy == "sequential":
@@ -484,7 +630,7 @@ view_graph_calibrate_cmd = [
     "--relpose_min_num_inliers", "100", # 30
     "--relpose_min_inlier_ratio", "0.1", # 0.25
 ]
-# run_subprocess(view_graph_calibrate_cmd, logger)
+run_subprocess(view_graph_calibrate_cmd, logger)
 view_graph_calibrate_time = time.time() - view_graph_calibrate_start
 logger.info(f"View graph calibrate done in {view_graph_calibrate_time:.2f} s")
 
@@ -744,11 +890,8 @@ else:
             use_gpu=use_gpu,
             min_num_inliers=min_num_inliers,
             ba_num_iterations=3,
-            gp_max_num_iterations=100,
             ba_ceres_max_num_iterations=200,
-            max_normalized_reproj_error=max_normalized_reproj_error,
-            tri_complete_max_reproj_error= 5.0,
-            tri_merge_max_reproj_error= 5.0)
+            max_normalized_reproj_error=max_normalized_reproj_error)
         for it in range(0, args.refine_num):
             logger.info(f" {it + 1} / {args.refine_num} reconstruction refine")
             run_subprocess(refine_cmd, logger)
@@ -830,10 +973,15 @@ if args.unify_output_images:
 # Timing summary
 # --------------------------
 total_time = time.time() - start_time
+sfm_time = total_time - da3_elapsed if args.pose_prior else total_time
 sparse_reconstruction_time = feature_extraction_time + feature_matching_time + mapper_time
 # pair_match_time = feature_matching_time / (input_img_num * (input_img_num - 1) / 2) if input_img_num > 1 else 0
 
+
+
 logger.info("Done. Timing statistics:")
+logger.info(f"  DA3 pose estimation time: {da3_elapsed:.2f} s")
+logger.info(f"  Pre-matching (pose prior) time: {pre_match_time:.2f} s")
 logger.info(f"  Feature extraction: {int(feature_extraction_time // 60)} min {feature_extraction_time % 60:.2f} s")
 logger.info(f"  Feature matching: {int(feature_matching_time // 60)} min {feature_matching_time % 60:.2f} s")
 # logger.info(f"  Average time per image pair: {pair_match_time * 1000:.2f} ms")
@@ -844,5 +992,27 @@ logger.info(f"  Refine time: {int(refine_time // 60)} min {refine_time % 60:.2f}
 logger.info(f"  Mapper: {int(mapper_time // 60)} min {mapper_time % 60:.2f} s")
 logger.info(f"  Sparse reconstruction: {int(sparse_reconstruction_time // 60)} min {sparse_reconstruction_time % 60:.2f} s")
 logger.info(f"  Image undistortion: {int(undistort_time // 60)} min {undistort_time % 60:.2f} s")
+logger.info(f"  sfm time: {int(sfm_time // 60)} min {sfm_time % 60:.2f} s")
 logger.info(f"  Total time: {int(total_time // 60)} min {total_time % 60:.2f} s")
 logger.info(f"  Number of images registered: {img_num} / {input_img_num}")
+
+# ========================= Write timing statistics to txt =========================
+write_timing_statistics(
+    output_path,
+    **{
+        "DA3 Pose Estimation": da3_elapsed if args.pose_prior else 0,
+        "Pre-matching (pose prior)": pre_match_time,
+        "Feature Extraction": feature_extraction_time,
+        "Feature Matching": feature_matching_time,
+        "View Graph Calibrate": view_graph_calibrate_time,
+        "Triangulation": triangulate_time,
+        "Bundle Adjustment": ba_time,
+        "Refine": refine_time,
+        "Mapper": mapper_time,
+        "Sparse Reconstruction": sparse_reconstruction_time,
+        "Image Undistortion": undistort_time,
+        "SfM Time (excl. DA3)": sfm_time,
+        "Total Time": total_time,
+        "Images Registered": f"{img_num} / {input_img_num}",
+    }
+)

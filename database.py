@@ -444,6 +444,7 @@ def initialize_colmap_database(
     camera_model: str = "OPENCV",
     prior_fx = None,
     prior_fy = None,
+    camera_params = None,
     logger: logging.Logger = None
 ) -> bool:
     """
@@ -453,9 +454,14 @@ def initialize_colmap_database(
     
     Args:
         database_path: Path to create/initialize COLMAP database
-        images_path: Path to images directory
+        images_dir: Path to images directory
+        input_images_path: List of image file paths
         camera_model: Camera model (e.g., "OPENCV", "PINHOLE")
-        args: Arguments object with camera parameters
+        prior_fx: Prior focal length in x direction (defaults to max(width, height))
+        prior_fy: Prior focal length in y direction (defaults to max(width, height))
+        camera_params: Optional pre-computed camera parameter list. If provided,
+            must match the expected parameter count for the given camera_model.
+            If None, default zero-distortion params are computed automatically.
         logger: Optional logger instance
     
     Returns:
@@ -502,6 +508,35 @@ def initialize_colmap_database(
             logger.warning(f"Unknown camera model '{camera_model}', defaulting to OPENCV")
             camera_model_id = 4
 
+        # Validate user-provided camera_params if specified
+        prior_focal_length = False
+        if camera_params is not None:
+            _EXPECTED_PARAM_COUNTS = {
+                0: 3,   # SIMPLE_PINHOLE: f, cx, cy
+                1: 4,   # PINHOLE: fx, fy, cx, cy
+                2: 4,   # SIMPLE_RADIAL: f, cx, cy, k
+                3: 5,   # RADIAL: f, cx, cy, k1, k2
+                4: 8,   # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+                5: 8,   # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+                6: 12,  # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+                7: 5,   # FOV: fx, fy, cx, cy, omega
+                8: 4,   # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
+                9: 5,   # RADIAL_FISHEYE: f, cx, cy, k1, k2
+                10: 12, # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1
+                11: 16, # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0..k5, p0, p1, s0..s3
+            }
+            expected_count = _EXPECTED_PARAM_COUNTS.get(camera_model_id)
+            actual_count = len(camera_params)
+            if expected_count is not None and actual_count != expected_count:
+                logger.error(
+                    f"Camera model '{camera_model}' (id={camera_model_id}) expects "
+                    f"{expected_count} parameters, but {actual_count} were provided."
+                )
+                db.close()
+                return False
+            logger.info(f"Using user-provided camera_params ({actual_count} params)")
+            prior_focal_length = True
+
         sub_folders = get_subfolders(images_dir)
         if len(sub_folders) == 0:
             logger.info("No subfolders found.")
@@ -525,46 +560,51 @@ def initialize_colmap_database(
                 return False            
             logger.info(f"Image dimensions: {width}x{height}")
 
-            fx = prior_fx if prior_fx is not None else max(width, height)
-            fy = prior_fy if prior_fy is not None else  max(width, height)
-            cx = width / 2
-            cy = height / 2
-
-            if camera_model_id == 0: # SIMPLE_PINHOLE: f, cx, cy                
-                camera_params = [max(fx, fy), cx, cy]
-            elif camera_model_id == 1: # PINHOLE: fx, fy, cx, cy                
-                camera_params = [fx, fy, cx, cy]
-            elif camera_model_id == 2: # SIMPLE_RADIAL: f, cx, cy, k                
-                camera_params = [max(fx, fy), cx, cy, 0.0]
-            elif camera_model_id == 3:  # RADIAL: f, cx, cy, k1, k2               
-                camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
-            elif camera_model_id == 4: # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2                
-                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-            elif camera_model_id == 5: # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4                
-                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-            elif camera_model_id == 6: # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6                
-                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            elif camera_model_id == 7: # FOV: fx, fy, cx, cy, omega                
-                camera_params = [fx, fy, cx, cy, 0.0]
-            elif camera_model_id == 8: # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1                
-                camera_params = [max(fx, fy), cx, cy, 0.0]
-            elif camera_model_id == 9: # RADIAL_FISHEYE: f, cx, cy, k1, k2                
-                camera_params = [max(fx, fy), cx, cy, 0.0, 0.0]
-            elif camera_model_id == 10: # THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1";                
-                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-            elif camera_model_id == 11: # RAD_TAN_THIN_PRISM_FISHEYE: "fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3"                
-                camera_params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+            # Determine camera parameters: use user-provided if given, else compute defaults
+            if camera_params is not None:
+                params = list(camera_params)
+                prior_focal_length = True
             else:
-                logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
-                camera_params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
-                camera_model_id = 4  # OPENCV
+                fx = prior_fx if prior_fx is not None else max(width, height)
+                fy = prior_fy if prior_fy is not None else  max(width, height)
+                cx = width / 2
+                cy = height / 2
+
+                if camera_model_id == 0: # SIMPLE_PINHOLE: f, cx, cy                
+                    params = [max(fx, fy), cx, cy]
+                elif camera_model_id == 1: # PINHOLE: fx, fy, cx, cy                
+                    params = [fx, fy, cx, cy]
+                elif camera_model_id == 2: # SIMPLE_RADIAL: f, cx, cy, k                
+                    params = [max(fx, fy), cx, cy, 0.0]
+                elif camera_model_id == 3:  # RADIAL: f, cx, cy, k1, k2               
+                    params = [max(fx, fy), cx, cy, 0.0, 0.0]
+                elif camera_model_id == 4: # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2                
+                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+                elif camera_model_id == 5: # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4                
+                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+                elif camera_model_id == 6: # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6                
+                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                elif camera_model_id == 7: # FOV: fx, fy, cx, cy, omega                
+                    params = [fx, fy, cx, cy, 0.0]
+                elif camera_model_id == 8: # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1                
+                    params = [max(fx, fy), cx, cy, 0.0]
+                elif camera_model_id == 9: # RADIAL_FISHEYE: f, cx, cy, k1, k2                
+                    params = [max(fx, fy), cx, cy, 0.0, 0.0]
+                elif camera_model_id == 10: # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1                
+                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                elif camera_model_id == 11: # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3                
+                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+                else:
+                    logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
+                    params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
+                    camera_model_id = 4  # OPENCV
             
             camera_id = db.add_camera(
                 model=camera_model_id,
                 width=width,
                 height=height,
-                params=camera_params,
-                prior_focal_length=False
+                params=params,
+                prior_focal_length=prior_focal_length
             )
             logger.info(f"Added camera: model={camera_model}, id={camera_id}")
             db.commit()
