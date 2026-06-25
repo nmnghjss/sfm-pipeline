@@ -54,8 +54,8 @@ def get_incremental_mapper_cmd(colmap_command: str,
         "--Mapper.ba_refine_extra_params", "1", # 1
         "--Mapper.max_extra_param", "1", # 1
         "--Mapper.ba_use_gpu", str(use_gpu),  # 0
-        "--Mapper.ba_local_backend", ba_local_backend, # Ceres
-        "--Mapper.ba_global_backend", ba_global_backend, # Ceres
+        # "--Mapper.ba_local_backend", ba_local_backend, # Ceres
+        # "--Mapper.ba_global_backend", ba_global_backend, # Ceres
         "--Mapper.abs_pose_max_error", "12", # 12
         "--Mapper.abs_pose_min_num_inliers", str(abs_pose_min_num_inliers), # 30
         "--Mapper.abs_pose_min_inlier_ratio", str(abs_pose_min_inlier_ratio), # 0.25

@@ -3,6 +3,7 @@ import numpy as np
 import sqlite3
 import time
 import os
+import pathlib
 import logging
 from PIL import Image
 from defs import ViewGraph, ImagePair, Cameras, Images, CameraModelId, ConfigurationType
@@ -437,6 +438,20 @@ def ReadColmapDatabase(path):
 
 
 
+def _validate_camera_params(model_name, model_id, params, expected_counts, logger):
+    """Validate that params count matches the camera model's expected count.
+    Returns True if valid, False otherwise (error already logged)."""
+    expected_count = expected_counts.get(model_id)
+    actual_count = len(params)
+    if expected_count is not None and actual_count != expected_count:
+        logger.error(
+            f"Camera model '{model_name}' (id={model_id}) expects "
+            f"{expected_count} parameters, but {actual_count} were provided."
+        )
+        return False
+    return True
+
+
 def initialize_colmap_database(
     database_path: str,
     images_dir: str,
@@ -445,23 +460,32 @@ def initialize_colmap_database(
     prior_fx = None,
     prior_fy = None,
     camera_params = None,
+    subfolder_camera_configs: dict = None,
     logger: logging.Logger = None
 ) -> bool:
     """
     Initialize COLMAP database and add image metadata without extracting SIFT features.
     This is more efficient than using COLMAP's feature_extractor when you plan to use
     custom feature extractors like SuperPoint.
+
+    Supports per-subfolder camera configurations: when subfolder_camera_configs is
+    provided, each subfolder under images_dir can have its own camera model and
+    intrinsic parameters (e.g., loaded from calibration.json via calibration_utils).
+    Subfolders without a matching entry fall back to the global camera_model/camera_params.
     
     Args:
         database_path: Path to create/initialize COLMAP database
         images_dir: Path to images directory
         input_images_path: List of image file paths
-        camera_model: Camera model (e.g., "OPENCV", "PINHOLE")
+        camera_model: Camera model (e.g., "OPENCV", "PINHOLE") — global fallback
         prior_fx: Prior focal length in x direction (defaults to max(width, height))
         prior_fy: Prior focal length in y direction (defaults to max(width, height))
         camera_params: Optional pre-computed camera parameter list. If provided,
             must match the expected parameter count for the given camera_model.
             If None, default zero-distortion params are computed automatically.
+        subfolder_camera_configs: Optional dict mapping subfolder basename →
+            {"camera_model": str, "params": list[float]}. When present, matching
+            subfolders use their own config instead of the global camera_model/params.
         logger: Optional logger instance
     
     Returns:
@@ -487,8 +511,8 @@ def initialize_colmap_database(
         
         logger.info(f"Input {len(input_images_path)} images")
 
-        # Map camera model string to COLMAP model ID    
-        camera_model_id = {
+        # --- Camera model name → ID mapping (reused for per-subfolder configs) ---
+        _CAMERA_MODEL_NAME_TO_ID = {
             "SIMPLE_PINHOLE": 0,
             "PINHOLE": 1,
             "SIMPLE_RADIAL": 2,
@@ -497,45 +521,38 @@ def initialize_colmap_database(
             "OPENCV_FISHEYE": 5,
             "FULL_OPENCV": 6,
             "FOV": 7,
-            "SIMPLE_RADIAL_FISHEYE":8,
-            "RADIAL_FISHEYE":9,
-            "THIN_PRISM_FISHEYE":10,
-            "RAD_TAN_THIN_PRISM_FISHEYE":11
-        }.get(camera_model.upper(), 4)  # Default to OPENCV
-        logger.info(f"camera model {camera_model}, id: {camera_model_id}")
+            "SIMPLE_RADIAL_FISHEYE": 8,
+            "RADIAL_FISHEYE": 9,
+            "THIN_PRISM_FISHEYE": 10,
+            "RAD_TAN_THIN_PRISM_FISHEYE": 11,
+        }
+        _EXPECTED_PARAM_COUNTS = {
+            0: 3,   # SIMPLE_PINHOLE: f, cx, cy
+            1: 4,   # PINHOLE: fx, fy, cx, cy
+            2: 4,   # SIMPLE_RADIAL: f, cx, cy, k
+            3: 5,   # RADIAL: f, cx, cy, k1, k2
+            4: 8,   # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+            5: 8,   # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+            6: 12,  # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+            7: 5,   # FOV: fx, fy, cx, cy, omega
+            8: 4,   # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
+            9: 5,   # RADIAL_FISHEYE: f, cx, cy, k1, k2
+            10: 12, # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1
+            11: 16, # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0..k5, p0, p1, s0..s3
+        }
 
-        if camera_model_id is None:
-            logger.warning(f"Unknown camera model '{camera_model}', defaulting to OPENCV")
-            camera_model_id = 4
+        # --- Global camera model ID ---
+        camera_model_id = _CAMERA_MODEL_NAME_TO_ID.get(camera_model.upper(), 4)
+        logger.info(f"Global camera model: {camera_model}, id: {camera_model_id}")
 
-        # Validate user-provided camera_params if specified
-        prior_focal_length = False
+        # --- Validate global camera_params if provided ---
         if camera_params is not None:
-            _EXPECTED_PARAM_COUNTS = {
-                0: 3,   # SIMPLE_PINHOLE: f, cx, cy
-                1: 4,   # PINHOLE: fx, fy, cx, cy
-                2: 4,   # SIMPLE_RADIAL: f, cx, cy, k
-                3: 5,   # RADIAL: f, cx, cy, k1, k2
-                4: 8,   # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
-                5: 8,   # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
-                6: 12,  # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
-                7: 5,   # FOV: fx, fy, cx, cy, omega
-                8: 4,   # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
-                9: 5,   # RADIAL_FISHEYE: f, cx, cy, k1, k2
-                10: 12, # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1
-                11: 16, # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0..k5, p0, p1, s0..s3
-            }
-            expected_count = _EXPECTED_PARAM_COUNTS.get(camera_model_id)
-            actual_count = len(camera_params)
-            if expected_count is not None and actual_count != expected_count:
-                logger.error(
-                    f"Camera model '{camera_model}' (id={camera_model_id}) expects "
-                    f"{expected_count} parameters, but {actual_count} were provided."
-                )
+            if not _validate_camera_params(
+                camera_model, camera_model_id, camera_params, _EXPECTED_PARAM_COUNTS, logger
+            ):
                 db.close()
                 return False
-            logger.info(f"Using user-provided camera_params ({actual_count} params)")
-            prior_focal_length = True
+            logger.info(f"Using user-provided camera_params ({len(camera_params)} params)")
 
         sub_folders = get_subfolders(images_dir)
         if len(sub_folders) == 0:
@@ -560,60 +577,83 @@ def initialize_colmap_database(
                 return False            
             logger.info(f"Image dimensions: {width}x{height}")
 
-            # Determine camera parameters: use user-provided if given, else compute defaults
-            if camera_params is not None:
+            # Determine camera parameters for this subfolder
+            subfolder_basename = os.path.basename(sub_folder)
+            cur_model_id = camera_model_id
+            cur_model_name = camera_model
+            cur_prior_focal_length = False
+
+            if subfolder_camera_configs and subfolder_basename in subfolder_camera_configs:
+                # Use per-subfolder calibrated config
+                cfg = subfolder_camera_configs[subfolder_basename]
+                sub_model = cfg["camera_model"].upper()
+                sub_params = cfg["params"]
+                sub_model_id = _CAMERA_MODEL_NAME_TO_ID.get(sub_model, 4)
+                if not _validate_camera_params(sub_model, sub_model_id, sub_params, _EXPECTED_PARAM_COUNTS, logger):
+                    db.close()
+                    return False
+                params = list(sub_params)
+                cur_model_id = sub_model_id
+                cur_model_name = sub_model
+                cur_prior_focal_length = True
+                logger.info(f"  Using calibrated config for '{subfolder_basename}': "
+                            f"model={sub_model}, {len(sub_params)} params")
+            elif camera_params is not None:
+                # Use global camera_params for all subfolders
                 params = list(camera_params)
-                prior_focal_length = True
+                cur_prior_focal_length = True
             else:
+                # Compute default zero-distortion params from image dimensions
                 fx = prior_fx if prior_fx is not None else max(width, height)
-                fy = prior_fy if prior_fy is not None else  max(width, height)
+                fy = prior_fy if prior_fy is not None else max(width, height)
                 cx = width / 2
                 cy = height / 2
 
-                if camera_model_id == 0: # SIMPLE_PINHOLE: f, cx, cy                
+                if cur_model_id == 0: # SIMPLE_PINHOLE: f, cx, cy                
                     params = [max(fx, fy), cx, cy]
-                elif camera_model_id == 1: # PINHOLE: fx, fy, cx, cy                
+                elif cur_model_id == 1: # PINHOLE: fx, fy, cx, cy                
                     params = [fx, fy, cx, cy]
-                elif camera_model_id == 2: # SIMPLE_RADIAL: f, cx, cy, k                
+                elif cur_model_id == 2: # SIMPLE_RADIAL: f, cx, cy, k                
                     params = [max(fx, fy), cx, cy, 0.0]
-                elif camera_model_id == 3:  # RADIAL: f, cx, cy, k1, k2               
+                elif cur_model_id == 3:  # RADIAL: f, cx, cy, k1, k2               
                     params = [max(fx, fy), cx, cy, 0.0, 0.0]
-                elif camera_model_id == 4: # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2                
+                elif cur_model_id == 4: # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2                
                     params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-                elif camera_model_id == 5: # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4                
+                elif cur_model_id == 5: # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4                
                     params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-                elif camera_model_id == 6: # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6                
+                elif cur_model_id == 6: # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6                
                     params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                elif camera_model_id == 7: # FOV: fx, fy, cx, cy, omega                
+                elif cur_model_id == 7: # FOV: fx, fy, cx, cy, omega                
                     params = [fx, fy, cx, cy, 0.0]
-                elif camera_model_id == 8: # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1                
+                elif cur_model_id == 8: # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1                
                     params = [max(fx, fy), cx, cy, 0.0]
-                elif camera_model_id == 9: # RADIAL_FISHEYE: f, cx, cy, k1, k2                
+                elif cur_model_id == 9: # RADIAL_FISHEYE: f, cx, cy, k1, k2                
                     params = [max(fx, fy), cx, cy, 0.0, 0.0]
-                elif camera_model_id == 10: # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1                
+                elif cur_model_id == 10: # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1                
                     params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                elif camera_model_id == 11: # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3                
+                elif cur_model_id == 11: # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3                
                     params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
                 else:
-                    logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
+                    logger.warning(f"Unsupported camera model ID {cur_model_id}, defaulting to OPENCV parameters")
                     params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
-                    camera_model_id = 4  # OPENCV
+                    cur_model_id = 4  # OPENCV
+                    cur_model_name = "OPENCV"
             
             camera_id = db.add_camera(
-                model=camera_model_id,
+                model=cur_model_id,
                 width=width,
                 height=height,
                 params=params,
-                prior_focal_length=prior_focal_length
+                prior_focal_length=cur_prior_focal_length
             )
-            logger.info(f"Added camera: model={camera_model}, id={camera_id}")
+            logger.info(f"Added camera: model={cur_model_name}, id={camera_id}")
             db.commit()
         
             # Add images to database
             image_count = 0
             for image_idx, image_file in enumerate(images_path):
-                img_rel_path = os.path.relpath(image_file, images_dir)
-                logger.debug(f"Adding image {img_rel_path} with camera_id {camera_id}")
+                img_rel_path = pathlib.Path(os.path.relpath(image_file, images_dir)).as_posix()
+                logger.debug(f"Adding image {img_rel_path} with camera_id {camera_id}, camera_model {cur_model_name}, params {params}")
                 try:
                     image_id = db.add_image(
                         name=img_rel_path,

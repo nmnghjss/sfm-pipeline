@@ -28,6 +28,7 @@ from utils import (
 )
 from database import ReadColmapDatabase, filter_matches_by_inliers
 from visualization import visualize_image_pairs
+from calibration_utils import load_calibration, map_subfolders_to_camera_configs
 
 from match_utils import compute_matched_image_pairs_by_pose_prior
 from database import initialize_colmap_database
@@ -50,23 +51,23 @@ parser.add_argument("--source_path", "-s", default="E:\\Test1234\\data18", type=
 parser.add_argument("--output_path", "-o", default="", type=str)
 parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
 parser.add_argument("--default_focal_length_factor", default=1.0, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
-parser.add_argument("--camera_params", default=None, type=str, help="Camera parameters for COLMAP")
+parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--colmap_executable", default="", type=str)
-parser.add_argument("--glomap_executable", default="", type=str)
 parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "SUPERPOINT"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
+parser.add_argument("--two_view_geometry_max_error", "-tvgme", type=float, default=4.0, help="two viw geometry max error")
 parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
@@ -162,8 +163,8 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
-    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     
 else:
@@ -250,34 +251,56 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     pre_match_time = time.time() - pre_match_start
     logger.info(f"Using {len(images_full_path)} images, pre-matching time: {pre_match_time:.2f} s")
 
+
+# ======================== Initialize database ==================================
+# Initialize COLMAP database with images (without SIFT extraction)
+logger.info("Initializing COLMAP database with image metadata (without feature extraction)...")
+
+# Parse camera_params from comma-separated string to list of floats
+camera_params = None
+if args.camera_params and isinstance(args.camera_params, str) and args.camera_params.strip():
+    camera_params = [float(x.strip()) for x in args.camera_params.split(',')]
+    logger.info(f"Parsed camera_params: {camera_params}")
+
+# Try loading per-subfolder calibration from calibration.json under source_path
+subfolder_configs = None
+calib_json_path = os.path.join(args.source_path, "calibration.json")
+if os.path.isfile(calib_json_path):
+    logger.info(f"Found calibration file: {calib_json_path}")
+    calib_all = load_calibration(calib_json_path, logger=logger)
+    if calib_all:
+        subfolder_names = get_subfolders_names(images_dir)
+        subfolder_configs = map_subfolders_to_camera_configs(
+            calib_all, subfolder_names, logger=logger
+        )
+        logger.info(
+            f"Matched {len(subfolder_configs)}/{len(subfolder_names)} "
+            f"subfolders to calibration entries"
+        )
+    else:
+        logger.warning("Calibration file loaded but contains no camera entries")
+
+splg_start = time.time()    
+db_init_success = initialize_colmap_database(
+    database_path=database_path,
+    images_dir= images_dir,
+    input_images_path=images_full_path,
+    camera_model=args.camera,
+    prior_fx=prior_focal_length,
+    prior_fy=prior_focal_length,
+    camera_params=camera_params,
+    subfolder_camera_configs=subfolder_configs,
+    logger=logger
+)    
+if not db_init_success:
+    logger.error("Failed to initialize database!")
+    sys.exit(1)
+
+
 # ========================= Feature extraction ==================================
 image_features = None
 if args.external_feature:
     logger.info("Using external feature extraction...")
-    
-    # Initialize COLMAP database with images (without SIFT extraction)
-    logger.info("Initializing COLMAP database with image metadata (without feature extraction)...")
-    
-    # Parse camera_params from comma-separated string to list of floats
-    _camera_params = None
-    if args.camera_params and isinstance(args.camera_params, str) and args.camera_params.strip():
-        _camera_params = [float(x.strip()) for x in args.camera_params.split(',')]
-        logger.info(f"Parsed camera_params: {_camera_params}")
-    
-    splg_start = time.time()    
-    db_init_success = initialize_colmap_database(
-        database_path=database_path,
-        images_dir= images_dir,
-        input_images_path=images_full_path,
-        camera_model=args.camera,
-        prior_fx=prior_focal_length,
-        prior_fy=prior_focal_length,
-        camera_params=_camera_params,
-        logger=logger
-    )    
-    if not db_init_success:
-        logger.error("Failed to initialize database!")
-        sys.exit(1)
     
     # Now run SuperPoint feature extraction    
     image_features, image_id_map, feat_ext_time = extract_neural_features(
@@ -357,8 +380,9 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         feature_match_type = feature_match_type, 
         use_gpu = use_gpu,
         max_feature_num = args.max_feature_num,
-        min_num_inliers = 30,
-        min_inlier_ratio = 0.1,                             
+        min_num_inliers = min_num_inliers,
+        min_inlier_ratio = min_inlier_ratio,
+        two_view_geometry_max_error = args.two_view_geometry_max_error,                             
         sift_lightglue_match_path = sift_lightglue_match_path,
         bruteforce_match_path = bruteforce_match_path,
         aliked_lightglue_match_path = aliked_lightglue_match_path
@@ -370,7 +394,6 @@ if image_features is not None and (args.external_match or args.match_strategy ==
 else:    
     match_start = time.time()
     if args.match_strategy == "exhaustive":
-        two_view_geometry_max_error = 3.0
         feat_matching_cmd = get_exhaustive_matcher_cmd(
             colmap_command=colmap_command,
             log_level=log_level,
@@ -383,7 +406,7 @@ else:
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
-            two_view_geometry_max_error=two_view_geometry_max_error
+            two_view_geometry_max_error=args.two_view_geometry_max_error
         )
     elif args.match_strategy == "custom":
         logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
@@ -401,7 +424,8 @@ else:
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
             min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio
+            min_inlier_ratio=min_inlier_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error
         )        
     
     elif args.match_strategy == "sequential":
@@ -440,9 +464,10 @@ else:
             database_path=database_path,
             feature_match_type=feature_match_type,
             use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num,
+            max_feature_num=args.max_feature_num * 4,
             min_num_inliers=min_num_inliers,
             min_inlier_ratio=min_inlier_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error,
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
@@ -479,7 +504,7 @@ view_graph_calibrate_cmd = [
     "--reestimate_relative_pose", "1",
     "--min_focal_length_ratio", "0.1",
     "--max_focal_length_ratio", "10",
-    "--max_calibration_error", "1", # 2
+    "--max_calibration_error", "2", # 2
     "--relpose_max_error", "1", # 1
     "--relpose_min_num_inliers", "100", # 30
     "--relpose_min_inlier_ratio", "0.1", # 0.25
@@ -589,7 +614,6 @@ elif args.mapper == "global":
         tri_merge_max_reproj_error=10, #15
         tri_min_angle= 1, #1       
     )
-
 elif args.mapper == "pose_prior_incremental":
     logger.info("Using prior-pose-based incremental mapper...")
     triangulate_cmd = get_points_triangulate_cmd(
@@ -732,7 +756,7 @@ else:
         refine_start = time.time()
         max_normalized_reproj_error = 0.01
         if prior_focal_length is not None:
-            max_normalized_reproj_error = 3 / prior_focal_length
+            max_normalized_reproj_error = 8 / prior_focal_length
             logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
         refine_cmd = get_reconstruction_refine_cmd(colmap_command=colmap_command,
             log_level=log_level,
