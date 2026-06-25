@@ -50,6 +50,7 @@ parser.add_argument("--sift_match_strategy", "-sms", type=str, default="acc", ch
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
+parser.add_argument("--clean", action="store_true", help="Whether to clean output files before SfM")
 args = parser.parse_args()
 
 args.SuperpointLightglue = True  # 强制使用 SuperPoint + LightGlue
@@ -76,9 +77,9 @@ current_path = resource_path()
 os_type = check_operating_system()
 print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
-    colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/bin/colmap.exe")
+    # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/bin/colmap.exe")
     # colmap_path = "D:\\Codes\\Work\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
-    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-3.13.0\\bin\\colmap.exe"
+    colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
     glomap_path = os.path.join(current_path, "glomap-x64-windows-cuda-1.2.0\\bin\\glomap.exe")
     vocab_path = os.path.join(current_path, "colmap-x64-windows-cuda-3.13.0/vocab/vocab_tree_faiss_flickr100K_words256K.bin")
 else:
@@ -97,6 +98,14 @@ else:
     if not Path(output_path).is_absolute():
         output_path = os.path.join(args.source_path, output_path)
 os.makedirs(output_path, exist_ok=True)
+
+# -------------------------------
+if args.clean:
+    print(f"Cleaning output directory: {output_path}")
+    shutil.rmtree(os.path.join(output_path, "sparse"), ignore_errors=True)
+    shutil.rmtree(os.path.join(output_path, "dense"), ignore_errors=True)
+    shutil.rmtree(os.path.join(output_path, "images"), ignore_errors=True)
+    shutil.rmtree(os.path.join(output_path, "distorted"), ignore_errors=True)
 
 # --------------------------
 # Logging setup
