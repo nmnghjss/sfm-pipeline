@@ -377,7 +377,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         log_level = log_level, 
         database_path=database_path,
         matched_images_pairs_path=matched_images_pairs_path,
-        feature_match_type = feature_match_type, 
+        # feature_match_type = feature_match_type, 
         use_gpu = use_gpu,
         max_feature_num = args.max_feature_num,
         min_num_inliers = min_num_inliers,

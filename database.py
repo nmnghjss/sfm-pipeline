@@ -25,7 +25,6 @@ CREATE_DESCRIPTORS_TABLE = """CREATE TABLE IF NOT EXISTS descriptors (
     rows INTEGER NOT NULL,
     cols INTEGER NOT NULL,
     data BLOB,
-    type INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY(image_id) REFERENCES images(image_id) ON DELETE CASCADE)"""
 
 CREATE_IMAGES_TABLE = """CREATE TABLE IF NOT EXISTS images (
@@ -199,18 +198,10 @@ class COLMAPDatabase(sqlite3.Connection):
     #         (image_id,) + descriptors.shape + (array_to_blob(descriptors),))
 
     def add_descriptors(self, image_id, descriptors, descriptor_type = 1):
-        descriptors_u8 = float_descriptors_to_uint8(descriptors, descriptor_type)
-        descriptors_blob = descriptors_u8.tobytes()        
+        descriptors = np.ascontiguousarray(descriptors, np.uint8)
         self.execute(
-            "INSERT INTO descriptors VALUES (?, ?, ?, ?, ?)",
-            (
-                image_id,                
-                descriptors_u8.shape[0],  # rows
-                descriptors_u8.shape[1] ,  # cols
-                descriptors_blob,      # binary data
-                int(descriptor_type)  # 描述子类型
-            )
-        )
+            "INSERT INTO descriptors VALUES (?, ?, ?, ?)",
+            (image_id,) + descriptors.shape + (array_to_blob(descriptors),))
 
     def add_matches(self, image_id1, image_id2, matches):
         assert(len(matches.shape) == 2)

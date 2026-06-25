@@ -116,7 +116,7 @@ def get_matches_importer_cmd(colmap_command: str,
         "--database_path", database_path,
         "--match_list_path", matched_images_pairs_path,
         "--match_type", "pairs", # {'pairs', 'raw', 'inliers'}               
-        "--FeatureMatching.type", feature_match_type, # UNDEFINED, SIFT, ALIKED_LIGHTGLUE, ALIKED_N32
+        # "--FeatureMatching.type", feature_match_type, # UNDEFINED, SIFT, ALIKED_LIGHTGLUE, ALIKED_N32
         "--FeatureMatching.num_threads", "-1",
         "--FeatureMatching.use_gpu", str(use_gpu),
         "--FeatureMatching.gpu_index", "-1",
