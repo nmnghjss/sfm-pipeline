@@ -452,27 +452,89 @@ def _validate_camera_params(model_name, model_id, params, expected_counts, logge
     return True
 
 
+def _compute_default_params(
+    camera_model_id: int, camera_model: str, width: int, height: int,
+    prior_fx, prior_fy,
+    _EXPECTED_PARAM_COUNTS: dict,
+    logger: logging.Logger
+):
+    """Compute default zero-distortion camera parameters from image dimensions."""
+    fx = prior_fx if prior_fx is not None else max(width, height)
+    fy = prior_fy if prior_fy is not None else max(width, height)
+    cx = width / 2
+    cy = height / 2
+
+    if camera_model_id == 0:  # SIMPLE_PINHOLE: f, cx, cy
+        params = [max(fx, fy), cx, cy]
+    elif camera_model_id == 1:  # PINHOLE: fx, fy, cx, cy
+        params = [fx, fy, cx, cy]
+    elif camera_model_id == 2:  # SIMPLE_RADIAL: f, cx, cy, k
+        params = [max(fx, fy), cx, cy, 0.0]
+    elif camera_model_id == 3:  # RADIAL: f, cx, cy, k1, k2
+        params = [max(fx, fy), cx, cy, 0.0, 0.0]
+    elif camera_model_id == 4:  # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+        params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+    elif camera_model_id == 5:  # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+        params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
+    elif camera_model_id == 6:  # FULL_OPENCV
+        params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    elif camera_model_id == 7:  # FOV: fx, fy, cx, cy, omega
+        params = [fx, fy, cx, cy, 0.0]
+    elif camera_model_id == 8:  # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
+        params = [max(fx, fy), cx, cy, 0.0]
+    elif camera_model_id == 9:  # RADIAL_FISHEYE: f, cx, cy, k1, k2
+        params = [max(fx, fy), cx, cy, 0.0, 0.0]
+    elif camera_model_id == 10:  # THIN_PRISM_FISHEYE
+        params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    elif camera_model_id == 11:  # RAD_TAN_THIN_PRISM_FISHEYE
+        params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    else:
+        logger.warning(f"Unsupported camera model ID {camera_model_id}, defaulting to OPENCV parameters")
+        params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
+        camera_model_id = 4
+        camera_model = "OPENCV"
+    return params, camera_model_id, camera_model
+
+
+def _get_image_dimensions(image_path: str, logger: logging.Logger):
+    """Open an image file and return (width, height). Returns None on failure."""
+    try:
+        img = Image.open(image_path)
+        return img.size
+    except Exception as e:
+        logger.error(f"Failed to read image dimensions: {image_path}. Error: {e}")
+        return None
+
+
 def initialize_colmap_database(
     database_path: str,
     images_dir: str,
-    input_images_path: str,
+    input_images_path: list,
     camera_model: str = "OPENCV",
+    camera_assignment: str = "per_subfolder",
     prior_fx = None,
     prior_fy = None,
     camera_params = None,
-    subfolder_camera_configs: dict = None,
+    subfolder_camera_configs: dict = None,    
+    image_camera_configs: dict = None,
     logger: logging.Logger = None
 ) -> bool:
     """
     Initialize COLMAP database and add image metadata without extracting SIFT features.
-    This is more efficient than using COLMAP's feature_extractor when you plan to use
-    custom feature extractors like SuperPoint.
 
-    Supports per-subfolder camera configurations: when subfolder_camera_configs is
-    provided, each subfolder under images_dir can have its own camera model and
-    intrinsic parameters (e.g., loaded from calibration.json via calibration_utils).
-    Subfolders without a matching entry fall back to the global camera_model/camera_params.
+    Supports three camera assignment modes via the ``camera_assignment`` parameter:
     
+    - ``"global"`` (1): All images share one camera model and intrinsics.
+    - ``"per_subfolder"`` (2): Each subfolder under ``images_dir`` gets its own camera.
+    - ``"per_image"`` (3): Each image gets its own camera (intrinsics read per image).
+
+    When ``subfolder_camera_configs`` is provided, matching subfolders use their own
+    calibrated config instead of the global ``camera_model`` / ``camera_params``.
+    Subfolders without a matching entry fall back to the global settings.
+
+    When ``camera_assignment="per_image"``, per-image calibration data can be passed
+    via ``image_camera_configs`` (keyed by image basename).
+
     Args:
         database_path: Path to create/initialize COLMAP database
         images_dir: Path to images directory
@@ -486,60 +548,71 @@ def initialize_colmap_database(
         subfolder_camera_configs: Optional dict mapping subfolder basename →
             {"camera_model": str, "params": list[float]}. When present, matching
             subfolders use their own config instead of the global camera_model/params.
+        camera_assignment: Camera assignment mode. One of:
+            ``"global"`` — one camera for all images;
+            ``"per_subfolder"`` (default) — one camera per subfolder;
+            ``"per_image"`` — one camera per image.
+        image_camera_configs: Optional dict for per-image calibration when
+            ``camera_assignment="per_image"``. Maps image basename (e.g. "img001.jpg") →
+            {"camera_model": str, "params": list[float]}. Images without an entry
+            fall back to the global camera_model / camera_params.
         logger: Optional logger instance
-    
+
     Returns:
         True if successful, False otherwise
     """
+
+    # --- Camera model name → ID mapping (reused for per-subfolder configs) ---
+    _CAMERA_MODEL_NAME_TO_ID = {
+        "SIMPLE_PINHOLE": 0,
+        "PINHOLE": 1,
+        "SIMPLE_RADIAL": 2,
+        "RADIAL": 3,
+        "OPENCV": 4,
+        "OPENCV_FISHEYE": 5,
+        "FULL_OPENCV": 6,
+        "FOV": 7,
+        "SIMPLE_RADIAL_FISHEYE": 8,
+        "RADIAL_FISHEYE": 9,
+        "THIN_PRISM_FISHEYE": 10,
+        "RAD_TAN_THIN_PRISM_FISHEYE": 11,
+    }
+    _EXPECTED_PARAM_COUNTS = {
+        0: 3,   # SIMPLE_PINHOLE: f, cx, cy
+        1: 4,   # PINHOLE: fx, fy, cx, cy
+        2: 4,   # SIMPLE_RADIAL: f, cx, cy, k
+        3: 5,   # RADIAL: f, cx, cy, k1, k2
+        4: 8,   # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+        5: 8,   # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+        6: 12,  # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
+        7: 5,   # FOV: fx, fy, cx, cy, omega
+        8: 4,   # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
+        9: 5,   # RADIAL_FISHEYE: f, cx, cy, k1, k2
+        10: 12, # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1
+        11: 16, # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0..k5, p0, p1, s0..s3
+    }
+
     if logger is None:
         logger = logging.getLogger()
-    
+
+    valid_modes = {"global", "per_subfolder", "per_image"}
+    if camera_assignment not in valid_modes:
+        logger.error(f"camera_assignment must be one of {valid_modes}, got '{camera_assignment}'")
+        return False
+
+    logger.info("Initializing COLMAP database without feature extraction...")
+    logger.info(f"Camera assignment mode: {camera_assignment}")
+
     try:
-        logger.info("Initializing COLMAP database without feature extraction...")
-        
-        # Create/connect to database
         db = COLMAPDatabase.connect(database_path)
         db.create_tables()
-        
-        # Get image list
-        # image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 
         if not input_images_path:
             logger.error(f"No images found in {images_dir}")
             db.close()
             return False
-        
-        logger.info(f"Input {len(input_images_path)} images")
 
-        # --- Camera model name → ID mapping (reused for per-subfolder configs) ---
-        _CAMERA_MODEL_NAME_TO_ID = {
-            "SIMPLE_PINHOLE": 0,
-            "PINHOLE": 1,
-            "SIMPLE_RADIAL": 2,
-            "RADIAL": 3,
-            "OPENCV": 4,
-            "OPENCV_FISHEYE": 5,
-            "FULL_OPENCV": 6,
-            "FOV": 7,
-            "SIMPLE_RADIAL_FISHEYE": 8,
-            "RADIAL_FISHEYE": 9,
-            "THIN_PRISM_FISHEYE": 10,
-            "RAD_TAN_THIN_PRISM_FISHEYE": 11,
-        }
-        _EXPECTED_PARAM_COUNTS = {
-            0: 3,   # SIMPLE_PINHOLE: f, cx, cy
-            1: 4,   # PINHOLE: fx, fy, cx, cy
-            2: 4,   # SIMPLE_RADIAL: f, cx, cy, k
-            3: 5,   # RADIAL: f, cx, cy, k1, k2
-            4: 8,   # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
-            5: 8,   # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
-            6: 12,  # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6
-            7: 5,   # FOV: fx, fy, cx, cy, omega
-            8: 4,   # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
-            9: 5,   # RADIAL_FISHEYE: f, cx, cy, k1, k2
-            10: 12, # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1
-            11: 16, # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0..k5, p0, p1, s0..s3
-        }
+        logger.info(f"Input {len(input_images_path)} images")
 
         # --- Global camera model ID ---
         camera_model_id = _CAMERA_MODEL_NAME_TO_ID.get(camera_model.upper(), 4)
@@ -554,124 +627,179 @@ def initialize_colmap_database(
                 return False
             logger.info(f"Using user-provided camera_params ({len(camera_params)} params)")
 
-        sub_folders = get_subfolders(images_dir)
-        if len(sub_folders) == 0:
-            logger.info("No subfolders found.")
-            sub_folders = [images_dir]
+        def resolve_camera_config(subfolder_basename=None, image_basename=None):
+            """Resolve (model_id, model_name, params, prior_focal_length) for a given context."""
+            c_model_id = camera_model_id
+            c_model_name = camera_model
 
-        for sub_folder in sub_folders:
-            logger.info(f"Processing subfolder: {sub_folder}")
-            images_num, all_files_num, images_path = count_images_in_dir(sub_folder)
-            logger.info(f"  Found {images_num} images in this subfolder with {all_files_num} total files.")
-            if images_num == 0 or images_num < all_files_num * 0.8:
-                logger.warning(f"  Warning: Only {images_num} images found out of {all_files_num} total files in {sub_folder}. Check if the path is correct and contains valid image files.")
-                continue
+            # Priority 1: per-image config
+            if image_basename is not None and image_camera_configs and image_basename in image_camera_configs:
+                cfg = image_camera_configs[image_basename]
+                c_model = cfg["camera_model"].upper()
+                c_params = cfg["params"]
+                c_mid = _CAMERA_MODEL_NAME_TO_ID.get(c_model, 4)
+                if not _validate_camera_params(c_model, c_mid, c_params, _EXPECTED_PARAM_COUNTS, logger):
+                    return None
+                logger.info(f"  Using per-image config for '{image_basename}': model={c_model}, {len(c_params)} params")
+                return c_mid, c_model, list(c_params), True
 
-            first_image_path = images_path[0]
-            try:                
-                img = Image.open(first_image_path)
-                width, height = img.size
-            except Exception as e:
-                logger.error(f"Failed to read first image dimensions: {first_image_path}. Error: {e}")
-                db.close()
-                return False            
-            logger.info(f"Image dimensions: {width}x{height}")
-
-            # Determine camera parameters for this subfolder
-            subfolder_basename = os.path.basename(sub_folder)
-            cur_model_id = camera_model_id
-            cur_model_name = camera_model
-            cur_prior_focal_length = False
-
-            if subfolder_camera_configs and subfolder_basename in subfolder_camera_configs:
-                # Use per-subfolder calibrated config
+            # Priority 2: per-subfolder config
+            if subfolder_basename is not None and subfolder_camera_configs and subfolder_basename in subfolder_camera_configs:
                 cfg = subfolder_camera_configs[subfolder_basename]
-                sub_model = cfg["camera_model"].upper()
-                sub_params = cfg["params"]
-                sub_model_id = _CAMERA_MODEL_NAME_TO_ID.get(sub_model, 4)
-                if not _validate_camera_params(sub_model, sub_model_id, sub_params, _EXPECTED_PARAM_COUNTS, logger):
-                    db.close()
-                    return False
-                params = list(sub_params)
-                cur_model_id = sub_model_id
-                cur_model_name = sub_model
-                cur_prior_focal_length = True
-                logger.info(f"  Using calibrated config for '{subfolder_basename}': "
-                            f"model={sub_model}, {len(sub_params)} params")
-            elif camera_params is not None:
-                # Use global camera_params for all subfolders
-                params = list(camera_params)
-                cur_prior_focal_length = True
-            else:
-                # Compute default zero-distortion params from image dimensions
-                fx = prior_fx if prior_fx is not None else max(width, height)
-                fy = prior_fy if prior_fy is not None else max(width, height)
-                cx = width / 2
-                cy = height / 2
+                c_model = cfg["camera_model"].upper()
+                c_params = cfg["params"]
+                c_mid = _CAMERA_MODEL_NAME_TO_ID.get(c_model, 4)
+                if not _validate_camera_params(c_model, c_mid, c_params, _EXPECTED_PARAM_COUNTS, logger):
+                    return None
+                logger.info(f"  Using per-subfolder config for '{subfolder_basename}': model={c_model}, {len(c_params)} params")
+                return c_mid, c_model, list(c_params), True
 
-                if cur_model_id == 0: # SIMPLE_PINHOLE: f, cx, cy                
-                    params = [max(fx, fy), cx, cy]
-                elif cur_model_id == 1: # PINHOLE: fx, fy, cx, cy                
-                    params = [fx, fy, cx, cy]
-                elif cur_model_id == 2: # SIMPLE_RADIAL: f, cx, cy, k                
-                    params = [max(fx, fy), cx, cy, 0.0]
-                elif cur_model_id == 3:  # RADIAL: f, cx, cy, k1, k2               
-                    params = [max(fx, fy), cx, cy, 0.0, 0.0]
-                elif cur_model_id == 4: # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2                
-                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-                elif cur_model_id == 5: # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4                
-                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0]
-                elif cur_model_id == 6: # FULL_OPENCV: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, k5, k6                
-                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                elif cur_model_id == 7: # FOV: fx, fy, cx, cy, omega                
-                    params = [fx, fy, cx, cy, 0.0]
-                elif cur_model_id == 8: # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1                
-                    params = [max(fx, fy), cx, cy, 0.0]
-                elif cur_model_id == 9: # RADIAL_FISHEYE: f, cx, cy, k1, k2                
-                    params = [max(fx, fy), cx, cy, 0.0, 0.0]
-                elif cur_model_id == 10: # THIN_PRISM_FISHEYE: fx, fy, cx, cy, k1, k2, p1, p2, k3, k4, sx1, sy1                
-                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                elif cur_model_id == 11: # RAD_TAN_THIN_PRISM_FISHEYE: fx, fy, cx, cy, k0, k1, k2, k3, k4, k5, p0, p1, s0, s1, s2, s3                
-                    params = [fx, fy, cx, cy, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
-                else:
-                    logger.warning(f"Unsupported camera model ID {cur_model_id}, defaulting to OPENCV parameters")
-                    params = [max(width, height), max(width, height), cx, cy, 0.0, 0.0, 0.0, 0.0]
-                    cur_model_id = 4  # OPENCV
-                    cur_model_name = "OPENCV"
-            
+            # Priority 3: global camera_params
+            if camera_params is not None:
+                return c_model_id, c_model_name, list(camera_params), True
+
+            # Priority 4: no params — caller must compute defaults
+            return None
+
+        image_count = 0
+
+        # =====================================================================
+        # MODE: global — one camera for ALL images
+        # =====================================================================
+        if camera_assignment == "global":
+            # Determine image dimensions from the first image
+            first_image = input_images_path[0]
+            dims = _get_image_dimensions(first_image, logger)
+            if dims is None:
+                db.close()
+                return False
+            width, height = dims
+            logger.info(f"Global mode — reference image dimensions: {width}x{height} (from {first_image})")
+
+            resolved = resolve_camera_config(subfolder_basename=None)
+            if resolved is not None:
+                cur_model_id, cur_model_name, params, cur_prior = resolved
+            else:
+                cur_prior = False
+                params, cur_model_id, cur_model_name = _compute_default_params(
+                    camera_model_id, camera_model, width, height,
+                    prior_fx, prior_fy, _EXPECTED_PARAM_COUNTS, logger
+                )
+
             camera_id = db.add_camera(
-                model=cur_model_id,
-                width=width,
-                height=height,
-                params=params,
-                prior_focal_length=cur_prior_focal_length
+                model=cur_model_id, width=width, height=height,
+                params=params, prior_focal_length=cur_prior
             )
-            logger.info(f"Added camera: model={cur_model_name}, id={camera_id}")
+            logger.info(f"Added global camera: model={cur_model_name}, id={camera_id}")
             db.commit()
-        
-            # Add images to database
-            image_count = 0
-            for image_idx, image_file in enumerate(images_path):
+
+            for image_idx, image_file in enumerate(input_images_path):
                 img_rel_path = pathlib.Path(os.path.relpath(image_file, images_dir)).as_posix()
-                logger.debug(f"Adding image {img_rel_path} with camera_id {camera_id}, camera_model {cur_model_name}, params {params}")
                 try:
-                    image_id = db.add_image(
-                        name=img_rel_path,
-                        camera_id=camera_id
-                    )
+                    db.add_image(name=img_rel_path, camera_id=camera_id)
                     image_count += 1
                     if (image_idx + 1) % 100 == 0:
-                        logger.info(f"  Added {image_idx + 1}/{len(input_images_path)} images to database")
+                        logger.info(f"  Added {image_idx + 1}/{len(input_images_path)} images")
                 except Exception as e:
                     logger.warning(f"Failed to add image {image_file}: {e}")
-                    continue
-        
             db.commit()
+
+        # =====================================================================
+        # MODE: per_subfolder — one camera per subfolder (original behaviour)
+        # =====================================================================
+        elif camera_assignment == "per_subfolder":
+            sub_folders = get_subfolders(images_dir)
+            if len(sub_folders) == 0:
+                logger.info("No subfolders found, treating entire images_dir as one subfolder.")
+                sub_folders = [images_dir]
+
+            for sub_folder in sub_folders:
+                logger.info(f"Processing subfolder: {sub_folder}")
+                images_num, all_files_num, images_path = count_images_in_dir(sub_folder)
+                logger.info(f"  Found {images_num} images in this subfolder with {all_files_num} total files.")
+                if images_num == 0 or images_num < all_files_num * 0.8:
+                    logger.warning(f"  Warning: Only {images_num} images found out of {all_files_num} total files in {sub_folder}. Skipping.")
+                    continue
+
+                first_image_path = images_path[0]
+                dims = _get_image_dimensions(first_image_path, logger)
+                if dims is None:
+                    db.close()
+                    return False
+                width, height = dims
+                logger.info(f"Image dimensions: {width}x{height}")
+
+                subfolder_basename = os.path.basename(sub_folder)
+                resolved = resolve_camera_config(subfolder_basename=subfolder_basename)
+                if resolved is not None:
+                    cur_model_id, cur_model_name, params, cur_prior = resolved
+                else:
+                    cur_prior = False
+                    params, cur_model_id, cur_model_name = _compute_default_params(
+                        camera_model_id, camera_model, width, height,
+                        prior_fx, prior_fy, _EXPECTED_PARAM_COUNTS, logger
+                    )
+
+                camera_id = db.add_camera(
+                    model=cur_model_id, width=width, height=height,
+                    params=params, prior_focal_length=cur_prior
+                )
+                logger.info(f"Added camera: model={cur_model_name}, id={camera_id}")
+                db.commit()
+
+                for image_idx, image_file in enumerate(images_path):
+                    img_rel_path = pathlib.Path(os.path.relpath(image_file, images_dir)).as_posix()
+                    try:
+                        db.add_image(name=img_rel_path, camera_id=camera_id)
+                        image_count += 1
+                        if (image_idx + 1) % 100 == 0:
+                            logger.info(f"  Added {image_idx + 1}/{len(input_images_path)} images")
+                    except Exception as e:
+                        logger.warning(f"Failed to add image {image_file}: {e}")
+                db.commit()
+
+        # =====================================================================
+        # MODE: per_image — each image gets its own camera
+        # =====================================================================
+        elif camera_assignment == "per_image":
+            for image_idx, image_file in enumerate(input_images_path):
+                dims = _get_image_dimensions(image_file, logger)
+                if dims is None:
+                    logger.warning(f"Skipping image due to dimension read failure: {image_file}")
+                    continue
+                width, height = dims
+                image_basename = os.path.basename(image_file)
+
+                resolved = resolve_camera_config(image_basename=image_basename)
+                if resolved is not None:
+                    cur_model_id, cur_model_name, params, cur_prior = resolved
+                else:
+                    cur_prior = False
+                    params, cur_model_id, cur_model_name = _compute_default_params(
+                        camera_model_id, camera_model, width, height,
+                        prior_fx, prior_fy, _EXPECTED_PARAM_COUNTS, logger
+                    )
+
+                camera_id = db.add_camera(
+                    model=cur_model_id, width=width, height=height,
+                    params=params, prior_focal_length=cur_prior
+                )
+                logger.debug(f"Added camera for '{image_basename}': model={cur_model_name}, id={camera_id}")
+
+                img_rel_path = pathlib.Path(os.path.relpath(image_file, images_dir)).as_posix()
+                try:
+                    db.add_image(name=img_rel_path, camera_id=camera_id)
+                    image_count += 1
+                    if (image_idx + 1) % 100 == 0:
+                        logger.info(f"  Processed {image_idx + 1}/{len(input_images_path)} images")
+                except Exception as e:
+                    logger.warning(f"Failed to add image {image_file}: {e}")
+                db.commit()
+
         db.close()
-        
         logger.info(f"Successfully initialized database with {image_count} images")
         return True
-        
+
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         return False

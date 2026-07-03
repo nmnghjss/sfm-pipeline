@@ -349,6 +349,7 @@ def align_and_compute_error(base_images_pose:dict, update_images_pose:dict, visu
         errors = PoseError()
         errors.ate_error_max = 10000
         errors.rotate_angle_error_max = 10000
+        print("警告: 匹配的图像数量少于3，无法进行对齐和误差计算。")
         return errors
 
 

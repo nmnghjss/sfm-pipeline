@@ -23,7 +23,12 @@ def get_incremental_mapper_cmd(colmap_command: str,
                              ba_global_frames_freq: int = 500,
                              ba_global_points_freq: int = 250000,
                              abs_pose_min_num_inliers: int = 30,
-                             abs_pose_min_inlier_ratio: float = 0.25):
+                             abs_pose_min_inlier_ratio: float = 0.25,
+                             filter_max_reproj_error: float = 4.0,
+                             filter_min_tri_angle: float = 1.5,
+                             refine_focal_length: int = 1,
+                             refine_principal_point: int = 1,
+                             refine_extra_params: int = 1):
 
     mapper_cmd = [
         colmap_command, "mapper",
@@ -49,18 +54,18 @@ def get_incremental_mapper_cmd(colmap_command: str,
         "--Mapper.ba_global_max_num_iterations", str(ba_global_max_num_iterations), # 50 --> 20 --> 25
         "--Mapper.ba_global_max_refinements", str(ba_global_max_refinements), # 5
         "--Mapper.ba_global_max_refinement_change", str(ba_global_max_refinement_change), # 0.0005
-        "--Mapper.ba_refine_focal_length", "1", # 1
-        "--Mapper.ba_refine_principal_point", "0", # 0
-        "--Mapper.ba_refine_extra_params", "1", # 1
+        "--Mapper.ba_refine_focal_length", str(refine_focal_length), # 1
+        "--Mapper.ba_refine_principal_point", str(refine_principal_point), # 0
+        "--Mapper.ba_refine_extra_params", str(refine_extra_params), # 1
         "--Mapper.max_extra_param", "1", # 1
         "--Mapper.ba_use_gpu", str(use_gpu),  # 0
-        # "--Mapper.ba_local_backend", ba_local_backend, # Ceres
-        # "--Mapper.ba_global_backend", ba_global_backend, # Ceres
+        "--Mapper.ba_local_backend", str(ba_local_backend), # Ceres
+        "--Mapper.ba_global_backend", str(ba_global_backend), # Ceres
         "--Mapper.abs_pose_max_error", "12", # 12
         "--Mapper.abs_pose_min_num_inliers", str(abs_pose_min_num_inliers), # 30
         "--Mapper.abs_pose_min_inlier_ratio", str(abs_pose_min_inlier_ratio), # 0.25
-        "--Mapper.filter_max_reproj_error", "4", # 4
-        "--Mapper.filter_min_tri_angle", "1.5", # 1.5
+        "--Mapper.filter_max_reproj_error", str(filter_max_reproj_error), # 4
+        "--Mapper.filter_min_tri_angle", str(filter_min_tri_angle), # 1.5
         "--Mapper.tri_min_angle", "1.5", # 1.5
         "--Mapper.tri_create_max_angle_error", "2", # 2
         "--Mapper.tri_continue_max_angle_error", "2", # 2
@@ -95,7 +100,10 @@ def get_hierarchical_mapper_cmd(colmap_command: str,
                              ba_global_max_refinements: int = 5,
                              ba_global_max_refinement_change: float = 0.0005,
                              abs_pose_min_num_inliers: int = 30,
-                             abs_pose_min_inlier_ratio: float = 0.25):
+                             abs_pose_min_inlier_ratio: float = 0.25,
+                             refine_focal_length: int = 1,
+                             refine_principal_point: int = 1,
+                             refine_extra_params: int = 1                             ):
 
     mapper_cmd = [
         colmap_command, "hierarchical_mapper",
@@ -119,9 +127,9 @@ def get_hierarchical_mapper_cmd(colmap_command: str,
         "--Mapper.min_focal_length_ratio", "0.1",
         "--Mapper.max_focal_length_ratio", "10",
         "--Mapper.max_extra_param", "1",
-        "--Mapper.ba_refine_focal_length", "1",
-        "--Mapper.ba_refine_principal_point", "0",
-        "--Mapper.ba_refine_extra_params", "1",
+        "--Mapper.ba_refine_focal_length", str(refine_focal_length),
+        "--Mapper.ba_refine_principal_point", str(refine_principal_point),
+        "--Mapper.ba_refine_extra_params", str(refine_extra_params),
         "--Mapper.ba_refine_sensor_from_rig", "0",
         "--Mapper.ba_local_function_tolerance", "0",
         "--Mapper.ba_local_max_num_iterations", str(ba_local_max_num_iterations), #25
@@ -185,6 +193,7 @@ def get_global_mapper_cmd(colmap_command: str,
                    min_num_inliers: int = 30,
                    ba_num_iterations: int = 3,
                    gp_max_num_iterations: int = 100,
+                   ba_backend: str = "CERES",
                    ba_ceres_max_num_iterations: int = 200,
                    skip_rotation_averaging: int = 0,
                    skip_track_establishment: int = 0,
@@ -202,7 +211,10 @@ def get_global_mapper_cmd(colmap_command: str,
                    ra_refilt_outlier_paisrs_num: int = 100,
                    max_angular_reproj_error_deg: int = 1,
                    max_normalized_reproj_error: float = 0.01,
-                   globalMapper_min_tri_angle_deg: int = 1):
+                   globalMapper_min_tri_angle_deg: int = 1,
+                   refine_focal_length: int = 1,
+                   refine_principal_point: int = 1,
+                   refine_extra_params: int = 1):
 
     mapper_cmd = [
         colmap_command, "global_mapper",
@@ -232,15 +244,16 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.gp_loss_function_scale", "0.1",
         "--GlobalMapper.gp_max_num_iterations", str(gp_max_num_iterations), # 100
         "--GlobalMapper.ba_num_iterations", str(ba_num_iterations),
-        "--GlobalMapper.ba_refine_sensor_from_rig", "0",        
-        "--GlobalMapper.ba_refine_focal_length", "1",
-        "--GlobalMapper.ba_refine_principal_point", "0",
-        "--GlobalMapper.ba_refine_extra_params", "1",
+        "--GlobalMapper.refine_sensor_from_rig", "0",        
+        "--GlobalMapper.ba_refine_focal_length", str(refine_focal_length),
+        "--GlobalMapper.ba_refine_principal_point", str(refine_principal_point),
+        "--GlobalMapper.ba_refine_extra_params", str(refine_extra_params),
         "--GlobalMapper.ba_refine_rig_from_world", "1",
         "--GlobalMapper.ba_refine_points3D", "1",
         "--GlobalMapper.ba_min_track_length", "3",
-        "--GlobalMapper.ba_ceres_use_gpu", "0", # 1
-        "--GlobalMapper.ba_ceres_gpu_index", "-1",
+        "--GlobalMapper.ba_backend", str(ba_backend),
+        "--GlobalMapper.ba_ceres_use_gpu", str(use_gpu), # 1
+        "--GlobalMapper.ba_gpu_index", "-1",
         "--GlobalMapper.ba_ceres_loss_function_scale", "1",
         "--GlobalMapper.ba_ceres_max_num_iterations", str(ba_ceres_max_num_iterations),
         # "--GlobalMapper.ba_skip_fixed_points_stage", "1",         
@@ -250,8 +263,8 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.tri_merge_max_reproj_error", str(tri_merge_max_reproj_error),
         "--GlobalMapper.tri_min_angle", str(tri_min_angle), #1
         "--GlobalMapper.ra_max_rotation_error_deg", str(ra_max_rotation_error_deg),
-        # "--GlobalMapper.ra_max_rotation_error_final_deg", str(ra_max_rotation_error_final_deg),
-        # "--GlobalMapper.ra_refilt_outlier_paisrs_num", str(ra_refilt_outlier_paisrs_num),
+        "--GlobalMapper.ra_max_rotation_error_final_deg", str(ra_max_rotation_error_final_deg),
+        "--GlobalMapper.ra_refilt_outlier_paisrs_num", str(ra_refilt_outlier_paisrs_num),
         "--GlobalMapper.max_angular_reproj_error_deg", str(max_angular_reproj_error_deg),
         "--GlobalMapper.max_normalized_reproj_error", str(max_normalized_reproj_error),
         "--GlobalMapper.min_tri_angle_deg", str(globalMapper_min_tri_angle_deg), #1
@@ -259,13 +272,15 @@ def get_global_mapper_cmd(colmap_command: str,
     return mapper_cmd
 
 
-def get_pose_prior_mapper_cmd(colmap_command: str, 
+def get_pos_prior_mapper_cmd(colmap_command: str, 
                              log_level: int, 
                              database_path: str, 
                              images_path: str,
                              input_path: str,
                              distorted_sparse_path: str,
                              use_gpu: int = 0,
+                             ba_local_backend: str = "CERES",
+                             ba_global_backend: str = "CERES",
                              ba_local_max_num_iterations: int = 25,
                              ba_local_max_refinements: int = 2,
                              ba_local_max_refinement_change: float = 0.001,
@@ -281,7 +296,10 @@ def get_pose_prior_mapper_cmd(colmap_command: str,
                              overwrite_priors_covariance: int = 1,
                              prior_position_std_x: float = 1.0,
                              prior_position_std_y: float = 1.0,
-                             prior_position_std_z: float = 1.0,):
+                             prior_position_std_z: float = 1.0,
+                             refine_focal_length: int = 1,
+                             refine_principal_point: int = 1,
+                             refine_extra_params: int = 1):
 
     mapper_cmd = [
         colmap_command, "pose_prior_mapper",
@@ -296,13 +314,15 @@ def get_pose_prior_mapper_cmd(colmap_command: str,
         "--Mapper.num_threads", "-1",
         "--Mapper.random_seed", "-1",
         "--Mapper.ba_use_gpu", str(use_gpu), # 0
-        "--Mapper.ba_gpu_index", "-1",        
+        "--Mapper.ba_gpu_index", "-1",     
+        "--Mapper.ba_local_backend", str(ba_local_backend), # Ceres
+        "--Mapper.ba_global_backend", str(ba_global_backend), # Ceres      
         "--Mapper.min_focal_length_ratio", "0.1",
         "--Mapper.max_focal_length_ratio", "10",
         "--Mapper.max_extra_param", "1",
-        "--Mapper.ba_refine_focal_length", "1",
-        "--Mapper.ba_refine_principal_point", "0",
-        "--Mapper.ba_refine_extra_params", "1",
+        "--Mapper.ba_refine_focal_length", str(refine_focal_length),
+        "--Mapper.ba_refine_principal_point", str(refine_principal_point),
+        "--Mapper.ba_refine_extra_params", str(refine_extra_params),
         "--Mapper.ba_refine_sensor_from_rig", "1",
         "--Mapper.ba_local_num_images", "6", # 6
         "--Mapper.ba_local_min_tri_angle", "6",        
@@ -375,7 +395,10 @@ def get_points_triangulate_cmd(colmap_command: str,
                              tri_complete_max_transitivity: int = 5,
                              filter_max_reproj_error: float = 4.0,
                              filter_min_tri_angle: float = 1.5,
-                             tri_re_max_angle_error: float = 5.0):
+                             tri_re_max_angle_error: float = 5.0,
+                             refine_focal_length: int = 1,
+                             refine_principal_point: int = 1,
+                             refine_extra_params: int = 1                             ):
 
     triangulate_cmd = [
         colmap_command, "point_triangulator",
@@ -403,9 +426,9 @@ def get_points_triangulate_cmd(colmap_command: str,
         "--Mapper.min_focal_length_ratio", "0.1",
         "--Mapper.max_focal_length_ratio", "10",
         "--Mapper.max_extra_param", "1",
-        "--Mapper.ba_refine_focal_length", "1",
-        "--Mapper.ba_refine_principal_point", "0",
-        "--Mapper.ba_refine_extra_params", "1",
+        "--Mapper.ba_refine_focal_length", str(refine_focal_length),
+        "--Mapper.ba_refine_principal_point", str(refine_principal_point),
+        "--Mapper.ba_refine_extra_params", str(refine_extra_params),
         "--Mapper.ba_refine_sensor_from_rig", "1",
         "--Mapper.ba_local_function_tolerance", "0",
         "--Mapper.ba_local_max_num_iterations", "25",
@@ -532,8 +555,10 @@ def get_pose_prior_global_mapper_cmd(colmap_command: str,
                    ra_max_rotation_error_deg: int = 10,                   
                    max_angular_reproj_error_deg: float = 1.0,
                    max_normalized_reproj_error: float = 0.01,
-                   min_tri_angle_deg: float = 1.0
-                   ):
+                   min_tri_angle_deg: float = 1.0,
+                   refine_focal_length: int = 1,
+                   refine_principal_point: int = 1,
+                   refine_extra_params: int = 1):
 
     mapper_cmd = [
         colmap_command, "pose_prior_global_mapper",
@@ -567,14 +592,14 @@ def get_pose_prior_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.gp_loss_function_scale", "0.1",
         "--GlobalMapper.gp_max_num_iterations", str(gp_max_num_iterations), # 100
         "--GlobalMapper.refine_sensor_from_rig", "0",        
-        "--GlobalMapper.ba_refine_focal_length", "1",
-        "--GlobalMapper.ba_refine_principal_point", "0",
-        "--GlobalMapper.ba_refine_extra_params", "1",
+        "--GlobalMapper.ba_refine_focal_length", str(refine_focal_length),
+        "--GlobalMapper.ba_refine_principal_point", str(refine_principal_point),
+        "--GlobalMapper.ba_refine_extra_params", str(refine_extra_params),
         "--GlobalMapper.ba_refine_rig_from_world", "1",
         "--GlobalMapper.ba_refine_points3D", "1",
         "--GlobalMapper.ba_min_track_length", "3",
         "--GlobalMapper.ba_ceres_use_gpu", "0", # 1
-        "--GlobalMapper.ba_ceres_gpu_index", "-1",
+        "--GlobalMapper.ba_gpu_index", "-1",
         "--GlobalMapper.ba_ceres_loss_function_scale", "1",
         "--GlobalMapper.ba_ceres_max_num_iterations", str(ba_ceres_max_num_iterations),
         "--GlobalMapper.ba_skip_fixed_points_stage", str(ba_skip_fixed_points_stage),        
@@ -617,6 +642,9 @@ def get_reconstruction_refine_cmd(colmap_command: str,
                    min_tri_angle_deg: float = 1.0,
                    tri_complete_max_reproj_error: float = 15.0,
                    tri_merge_max_reproj_error: float = 15.0,
+                   refine_focal_length: int = 1,
+                   refine_principal_point: int = 1,
+                   refine_extra_params: int = 1                   
                    ):
 
     mapper_cmd = [
@@ -651,14 +679,14 @@ def get_reconstruction_refine_cmd(colmap_command: str,
         "--GlobalMapper.gp_loss_function_scale", "0.1",
         "--GlobalMapper.gp_max_num_iterations", str(gp_max_num_iterations), # 100
         # "--GlobalMapper.refine_sensor_from_rig", "0",        
-        "--GlobalMapper.ba_refine_focal_length", "1",
-        "--GlobalMapper.ba_refine_principal_point", "0",
-        "--GlobalMapper.ba_refine_extra_params", "1",
+        "--GlobalMapper.ba_refine_focal_length", str(refine_focal_length),
+        "--GlobalMapper.ba_refine_principal_point", str(refine_principal_point),
+        "--GlobalMapper.ba_refine_extra_params", str(refine_extra_params),
         "--GlobalMapper.ba_refine_rig_from_world", "1",
         "--GlobalMapper.ba_refine_points3D", "1",
         "--GlobalMapper.ba_min_track_length", "3",
         "--GlobalMapper.ba_ceres_use_gpu", "0", # 1
-        "--GlobalMapper.ba_ceres_gpu_index", "-1",
+        "--GlobalMapper.ba_gpu_index", "-1",
         "--GlobalMapper.ba_ceres_loss_function_scale", "1",
         "--GlobalMapper.ba_ceres_max_num_iterations", str(ba_ceres_max_num_iterations),
         "--GlobalMapper.ba_skip_fixed_points_stage", str(ba_skip_fixed_points_stage),        
