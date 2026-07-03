@@ -58,13 +58,13 @@ parser.add_argument("--resize", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "SUPERPOINT", "LOMA"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32, LoMa)")
-parser.add_argument("--loma_variant", "-lv", type=str, default="loma_B128", choices=["loma_B128", "loma_B", "loma_L", "loma_G", "loma_R"], help="LoMa model variant (only used when --feature_type LOMA)")
+parser.add_argument("--feature_type", "-ft", type=str, default="LOMA", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "SUPERPOINT", "LOMA"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32, LoMa)")
+parser.add_argument("--loma_variant", "-lv", type=str, default="loma_R", choices=["loma_B128", "loma_B", "loma_L", "loma_G", "loma_R"], help="LoMa model variant (only used when --feature_type LOMA)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="LIGHTGLUE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
@@ -166,9 +166,9 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
-    colmap_path = "E:\\RUSA\\colmap-x64-windows-cuda\\bin\\colmap.exe"
+    # colmap_path = "E:\\RUSA\\colmap-x64-windows-cuda\\bin\\colmap.exe"
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     
 else:
@@ -306,10 +306,10 @@ image_features = None
 if args.feature_type == "LOMA":
         logger.info("Using LOMA for feature extraction + matching (one-shot)...")
         weights_path = os.path.join(current_path, "checkpoints")
-        loma_variant = getattr(args, "loma_variant", "loma_B128")  # 可选命令行参数
+        # loma_variant = getattr(args, "loma_variant", "loma_B128")  # 可选命令行参数
         extract_time, feature_matching_time = match_features_with_loma(
             weights_root=weights_path,
-            feature_type=loma_variant,
+            feature_type=args.loma_variant,
             database_path=database_path,
             image_paths=images_full_path,
             match_list_path=matched_images_pairs_path,       # ★ 让函数写 image_pairs.txt

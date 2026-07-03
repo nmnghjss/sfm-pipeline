@@ -638,11 +638,11 @@ def match_features_with_loma(
     
     # 根据 feature_type 选择模型配置
     model_configs = {
-        "loma_B128": ("checkpoint/loma_B128.pth", "dedode_b", 128),
-        "loma_B": ("checkpoint/loma_B.pth", "dedode_g", 256),
-        "loma_L": ("checkpoint/loma_L.pth", "dedode_g", 256),
-        "loma_G": ("checkpoint/loma_G.pth", "dedode_g", 256),
-        "loma_R": ("checkpoint/loma_R.pth", "dedode_g", 256),
+        "loma_B128": ("loma/loma_B128.pth", "dedode_b", 128),
+        "loma_B": ("loma/loma_B.pth", "dedode_g", 256),
+        "loma_L": ("loma/loma_L.pth", "dedode_g", 256),
+        "loma_G": ("loma/loma_G.pth", "dedode_g", 256),
+        "loma_R": ("loma/loma_R.pth", "dedode_g", 256),
     }
     
     if feature_type not in model_configs:

@@ -278,7 +278,18 @@ class LoMa(Model):
 			[MatchAssignment(cfg.embed_dim) for _ in range(cfg.n_layers)]
 		)
 
-		self._detector = DaD(DaD.Cfg(compile=cfg.compile), local_weights="checkpoints/checkpoint/dad.pth").eval()
+		dino_v2_weights_path = None
+		if cfg.weights_url is not None and os.path.exists(cfg.weights_url):
+			base_dir = os.path.dirname(cfg.weights_url)
+			dad_weights_path = os.path.join(base_dir, "dad.pth")
+			if not os.path.exists(dad_weights_path):
+				raise FileNotFoundError(
+					f"DaD weights not found at {dad_weights_path}. Please download the weights and place them in the same directory as the LoMa weights."
+				)
+			self._detector = DaD(DaD.Cfg(compile=cfg.compile), local_weights=dad_weights_path).eval()
+			dino_v2_weights_path = os.path.join(base_dir, "dinov2_vitl14_pretrain.pth")
+		else:
+			self._detector = DaD(DaD.Cfg(compile=cfg.compile)).eval()
 		for p in self._detector.parameters():
 			p.requires_grad = False
 
@@ -287,6 +298,7 @@ class LoMa(Model):
 				arch=cfg.descriptor,
 				compile=cfg.compile,
 				descriptor_dim=cfg.input_dim,
+				weights_url=dino_v2_weights_path
 			)
 		).eval()
 		for p in self._descriptor.parameters():
@@ -298,11 +310,10 @@ class LoMa(Model):
 			if os.path.exists(cfg.weights_url):
 				weights = torch.load(cfg.weights_url, map_location=device, weights_only=True)
 			else:
-				# weights = torch.hub.load_state_dict_from_url(
-				# 	cfg.weights_url,
-				# 	map_location=device,
-				# )
-				weights = torch.load(cfg.weights_url, map_location=device, weights_only=True)
+				weights = torch.hub.load_state_dict_from_url(
+					cfg.weights_url,
+					map_location=device,
+				)
 			missing_keys, unexpected_keys = self.load_state_dict(weights, strict=False)
 			if len(unexpected_keys) > 0:
 				allowed_extra_layer_keys = {

@@ -21,6 +21,7 @@ class DeDoDeDescriptor(Model):
 		compile: bool = True
 		descriptor_dim: int = 256
 		hidden_blocks: int = 5
+		weights_url: str | None = None  # 可选参数，指定权重文件的URL或本地路径
 
 	def __init__(self, cfg: Cfg) -> None:
 		super().__init__()
@@ -32,7 +33,7 @@ class DeDoDeDescriptor(Model):
 		elif cfg.arch == "dedode_g":
 			encoder, decoder = dedode_descriptor_G(
 				descriptor_dim=cfg.descriptor_dim, hidden_blocks=cfg.hidden_blocks,
-				dinov2_weights = "checkpoints/checkpoint/dinov2_vitl14_pretrain.pth"
+				dinov2_weights=cfg.weights_url
 			)
 		else:
 			raise ValueError(f"Architecture {cfg.arch} not supported")
