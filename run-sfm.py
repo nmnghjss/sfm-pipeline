@@ -80,7 +80,7 @@ parser.add_argument("--external_feature", "-ef", action="store_true", help="Whet
 parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
-parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
+parser.add_argument("--min_matches_per_image", "-mni", type=int, default=5,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
@@ -165,8 +165,8 @@ current_path = resource_path()
 print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
-    # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260703/colmap.exe")
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
     # colmap_path = "E:\\RUSA\\colmap-x64-windows-cuda\\bin\\colmap.exe"
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
@@ -901,6 +901,20 @@ if args.unify_output_images:
 total_time = time.time() - start_time
 sparse_reconstruction_time = feature_extraction_time + feature_matching_time + mapper_time
 # pair_match_time = feature_matching_time / (input_img_num * (input_img_num - 1) / 2) if input_img_num > 1 else 0
+
+# Write timing to txt file for downstream parsing
+timing_txt_path = os.path.join(output_path, "sfm_time_statistic.txt")
+try:
+    with open(timing_txt_path, "w", encoding="utf-8") as f:
+        f.write(f"SfM Time: {total_time:.2f} s\n")
+        f.write(f"Feature Extraction: {feature_extraction_time:.2f} s\n")
+        f.write(f"Pre-matching (pose prior): {pre_match_time:.2f} s\n")
+        f.write(f"Feature Matching: {feature_matching_time:.2f} s\n")
+        f.write(f"Mapper: {mapper_time:.2f} s\n")
+        f.write(f"Images Registered: {img_num} / {input_img_num}\n")
+    logger.info(f"Timing info written to: {timing_txt_path}")
+except Exception as e:
+    logger.warning(f"Failed to write timing file: {e}")
 
 logger.info("Done. Timing statistics:")
 logger.info(f"  Feature extraction: {int(feature_extraction_time // 60)} min {feature_extraction_time % 60:.2f} s")

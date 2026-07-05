@@ -11,6 +11,7 @@ from match_utils import load_image_pairs
 from loma.loma import LoMa, filter_matches
 from database import batch_write_keypoints_to_database
 import numpy as np
+from tqdm import tqdm
 
 
 def generate_sequential_match_list(
@@ -677,7 +678,7 @@ def match_features_with_loma(
         )
         return flow
     
-    for img_path in image_paths:
+    for img_path in tqdm(image_paths, desc="Extracting features", unit="img"):
         img_path_str = str(img_path)
         img_name = os.path.basename(img_path)
         try:
@@ -757,7 +758,7 @@ def match_features_with_loma(
     image_id_map = {name: i + 1 for i, name in enumerate(valid_image_names)}
     matches_to_write = []
 
-    for img_name0, img_name1 in match_pairs:
+    for img_name0, img_name1 in tqdm(match_pairs, desc="LoMa matching", unit="pair"):
         try:
             if image_features[img_name0] is None or image_features[img_name1] is None:
                 continue
