@@ -828,7 +828,7 @@ def match_features_with_loma(
         desc_np = desc_np[:, :128]
         keypoints_to_write.append((image_id, kpts_np, desc_np))
         # input(f"Press Enter to continue...")
-        print(f"image_id: {image_id}, kpts_np: {kpts_np.shape}, desc_np: {desc_np.shape}")
+        # print(f"image_id: {image_id}, kpts_np: {kpts_np.shape}, desc_np: {desc_np.shape}")
     written_kpts = batch_write_keypoints_to_database(
         db, keypoints_to_write, feature_type=descriptor_type_id, logger=logger
     )

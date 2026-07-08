@@ -165,7 +165,7 @@ current_path = resource_path()
 print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
-    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260703/colmap.exe")
+    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260706/colmap.exe")
     # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.0.4\\bin\\colmap.exe"
     # colmap_path = "E:\\RUSA\\colmap-x64-windows-cuda\\bin\\colmap.exe"
