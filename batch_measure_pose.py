@@ -32,6 +32,29 @@ def get_project_root():
         return os.path.dirname(os.path.abspath(__file__))
 
 
+def read_fast_psnr_from_metrics(metrics_txt_path: str) -> float:
+    """
+    从 metrics.txt 中读取 "快速高斯 PSNR" 的值。
+    如果文件不存在或解析失败，返回 0.0。
+    """
+    if not os.path.isfile(metrics_txt_path):
+        print(f"警告: metrics.txt 未找到: {metrics_txt_path}")
+        return 0.0
+    try:
+        with open(metrics_txt_path, "r", encoding="utf-8") as f:
+            for line in f:
+                if "快速高斯 PSNR" in line:
+                    # 格式: "快速高斯 PSNR: 26.89"
+                    parts = line.strip().split(":")
+                    if len(parts) >= 2:
+                        return float(parts[1].strip())
+        print(f"警告: 未在 {metrics_txt_path} 中找到 '快速高斯 PSNR'")
+        return 0.0
+    except Exception as e:
+        print(f"警告: 读取 {metrics_txt_path} 失败: {e}")
+        return 0.0
+
+
 def save_metrics_to_csv(metrics_dict, output_path, fieldnames=None):
     """
     将 metrics 字典按键排序后保存为 CSV 文件。支持对象或字典值。
@@ -157,6 +180,13 @@ if __name__ == '__main__':
             errors.registered_diff = update_registered_num - base_registered_num
             errors.registered_ratio_diff = errors.update_registered_ratio - errors.base_registered_ratio
 
+        # 读取 base 和 update 的快速高斯 PSNR，计算差值
+        base_metrics_path = os.path.join(data_path, args.base_dir, "metrics.txt")
+        update_metrics_path = os.path.join(data_path, args.update_dir, "metrics.txt")
+        base_psnr = read_fast_psnr_from_metrics(base_metrics_path)
+        update_psnr = read_fast_psnr_from_metrics(update_metrics_path)
+        errors.fast_psnr_diff = update_psnr - base_psnr
+
         if errors is not None:
             pose_erroe_list[data_path] = errors
 
@@ -196,7 +226,7 @@ if __name__ == '__main__':
         'base_registered_num', 'update_registered_num', 'base_registered_ratio', 'update_registered_ratio', 'registered_ratio_diff',
         'ate_error_mean', 'ate_error_median', 'ate_error_std', 'ate_error_rmse', 'ate_error_p90', 'ate_error_max',
         'rotate_angle_error_mean', 'rotate_angle_error_median', 'rotate_angle_error_std', 'rotate_angle_error_rmse', "rotate_angle_error_p90", 'rotate_angle_error_max',
-        'registered_diff'
+        'registered_diff', 'fast_psnr_diff'
     ]
     
     save_metrics_to_csv(pose_erroe_list, os.path.join(args.dataset_root, args.output_file_name), fieldnames=custom_fieldnames)

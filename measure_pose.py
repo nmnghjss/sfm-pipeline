@@ -28,6 +28,7 @@ class PoseError:
         update_registered_num=0,
         base_registered_ratio=0.0,
         update_registered_ratio=0.0,
+        fast_psnr_diff=0.0,
     ):
         self.ate_error_rmse = ate_error_rmse
         self.ate_error_mean = ate_error_mean
@@ -50,6 +51,8 @@ class PoseError:
         self.update_registered_num = update_registered_num
         self.base_registered_ratio = base_registered_ratio
         self.update_registered_ratio = update_registered_ratio
+
+        self.fast_psnr_diff = fast_psnr_diff
 
 
 

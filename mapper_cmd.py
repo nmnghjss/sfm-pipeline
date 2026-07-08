@@ -15,7 +15,7 @@ def get_incremental_mapper_cmd(colmap_command: str,
                              ba_local_max_num_iterations: int = 25,
                              ba_local_max_refinements: int = 2,
                              ba_local_max_refinement_change: float = 0.001,
-                             ba_global_max_num_iterations: int = 25,
+                             ba_global_max_num_iterations: int = 50,
                              ba_global_max_refinements: int = 5,
                              ba_global_max_refinement_change: float = 0.0005,
                              ba_global_frames_ratio: float = 1.1,
@@ -51,7 +51,7 @@ def get_incremental_mapper_cmd(colmap_command: str,
         "--Mapper.ba_global_points_ratio", str(ba_global_points_ratio), # 1.1
         "--Mapper.ba_global_frames_freq", str(ba_global_frames_freq), # 500
         "--Mapper.ba_global_points_freq", str(ba_global_points_freq), # 250000
-        "--Mapper.ba_global_max_num_iterations", str(ba_global_max_num_iterations), # 50 --> 20 --> 25
+        "--Mapper.ba_global_max_num_iterations", str(ba_global_max_num_iterations), # 50
         "--Mapper.ba_global_max_refinements", str(ba_global_max_refinements), # 5
         "--Mapper.ba_global_max_refinement_change", str(ba_global_max_refinement_change), # 0.0005
         "--Mapper.ba_refine_focal_length", str(refine_focal_length), # 1

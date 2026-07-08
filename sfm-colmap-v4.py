@@ -57,16 +57,16 @@ parser.add_argument("--refine_principal_point", type=int, default=1, help="Wheth
 parser.add_argument("--refine_extra_params", type=int, default=1, help="Whether to refine extra camera parameters during bundle adjustment")
 parser.add_argument("--colmap_executable", default="", type=str)
 parser.add_argument("--init_camera", action="store_true")
-parser.add_argument("--single_camera", "-sc",default="1", type=str)
-parser.add_argument("--single_fold", "-sf", default="0", type=str)
+parser.add_argument("--single_camera", "-sc",default="0", type=str)
+parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "SUPERPOINT"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="exhaustive", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "threshold", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="incremental", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
@@ -79,7 +79,7 @@ parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Wh
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
 parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
 parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
-parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
+parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=100,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
@@ -294,21 +294,21 @@ if args.init_camera:
         camera_assignment = "per_image"
 
     logger.info("Initializing COLMAP database with image metadata ...")
-    db_init_success = initialize_colmap_database(
-        database_path=database_path,
-        images_dir= images_dir,
-        input_images_path=images_full_path,
-        camera_model=args.camera,
-        camera_assignment=camera_assignment,
-        prior_fx=prior_focal_length,
-        prior_fy=prior_focal_length,
-        camera_params=camera_params,
-        subfolder_camera_configs=subfolder_configs,
-        logger=logger
-    )    
-    if not db_init_success:
-        logger.error("Failed to initialize database!")
-        sys.exit(1)
+    # db_init_success = initialize_colmap_database(
+    #     database_path=database_path,
+    #     images_dir= images_dir,
+    #     input_images_path=images_full_path,
+    #     camera_model=args.camera,
+    #     camera_assignment=camera_assignment,
+    #     prior_fx=prior_focal_length,
+    #     prior_fy=prior_focal_length,
+    #     camera_params=camera_params,
+    #     subfolder_camera_configs=subfolder_configs,
+    #     logger=logger
+    # )    
+    # if not db_init_success:
+    #     logger.error("Failed to initialize database!")
+    #     sys.exit(1)
 
 
 # ========================= Feature extraction ==================================
@@ -767,11 +767,11 @@ else:
         ba_local_max_num_iterations=25,
         ba_local_max_refinements=2,
         ba_local_max_refinement_change=0.001,
-        ba_global_max_num_iterations=100, # 50
+        ba_global_max_num_iterations=50, # 50
         ba_global_max_refinements=5,
         ba_global_frames_ratio=1.1,
         ba_global_points_ratio=1.1,
-        ba_global_max_refinement_change=0.0001,
+        ba_global_max_refinement_change=0.0005,
         abs_pose_min_num_inliers=min_num_inliers,
         abs_pose_min_inlier_ratio=min_inlier_ratio,
         filter_max_reproj_error=4.0, #4
