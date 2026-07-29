@@ -4,9 +4,194 @@ import sys
 import os
 import subprocess
 import logging
-from typing import Optional
+import time
+import threading
+from typing import Optional, Tuple, Dict
 import shutil
 from typing import List
+
+
+# ---------------------------------------------------------------------------
+#  GPU memory monitoring – multi-fallback: pynvml → torch.cuda → nvidia-smi
+# ---------------------------------------------------------------------------
+_GPU_MONITOR_AVAILABLE = False
+_GPU_MONITOR_METHOD = ""
+
+# Method 1: pynvml (most detailed)
+try:
+    import pynvml
+    pynvml.nvmlInit()
+    _GPU_MONITOR_AVAILABLE = True
+    _GPU_MONITOR_METHOD = "pynvml"
+except Exception:
+    pass
+
+# Method 2: torch.cuda (reliable, already a project dependency)
+if not _GPU_MONITOR_AVAILABLE:
+    try:
+        import torch
+        if torch.cuda.is_available():
+            _GPU_MONITOR_AVAILABLE = True
+            _GPU_MONITOR_METHOD = "torch.cuda"
+    except Exception:
+        pass
+
+
+def _get_gpu_memory_usage() -> Dict[int, Tuple[int, int]]:
+    """Return {gpu_index: (used_bytes, total_bytes)} for each NVIDIA GPU.
+    Returns an empty dict if no GPU monitoring method is available or fails.
+    Tries: pynvml → torch.cuda → nvidia-smi subprocess.
+    """
+    result: Dict[int, Tuple[int, int]] = {}
+
+    if not _GPU_MONITOR_AVAILABLE:
+        return result
+
+    # ---- pynvml ----
+    if _GPU_MONITOR_METHOD == "pynvml":
+        try:
+            device_count = pynvml.nvmlDeviceGetCount()
+            for i in range(device_count):
+                handle = pynvml.nvmlDeviceGetHandleByIndex(i)
+                info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                result[i] = (info.used, info.total)
+            return result
+        except Exception:
+            # Fall through to nvidia-smi
+            pass
+
+    # ---- torch.cuda ----
+    if _GPU_MONITOR_METHOD == "torch.cuda":
+        try:
+            import torch
+            for i in range(torch.cuda.device_count()):
+                # torch.cuda.mem_get_info returns (free, total) in bytes
+                free_bytes, total_bytes = torch.cuda.mem_get_info(i)
+                used_bytes = total_bytes - free_bytes
+                result[i] = (used_bytes, total_bytes)
+            return result
+        except Exception:
+            pass
+
+    # ---- nvidia-smi (last resort) ----
+    try:
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=index,memory.used,memory.total",
+             "--format=csv,noheader,nounits"],
+            text=True, timeout=5,
+        )
+        for line in output.strip().splitlines():
+            parts = [x.strip() for x in line.split(",")]
+            if len(parts) >= 3:
+                idx = int(parts[0])
+                used_mib = float(parts[1])
+                total_mib = float(parts[2])
+                result[idx] = (int(used_mib * 1024 * 1024), int(total_mib * 1024 * 1024))
+    except Exception:
+        pass
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+#  Memory Monitor – polls CPU/GPU memory of a process tree in a background thread
+# ---------------------------------------------------------------------------
+_PROCESS_MONITOR_AVAILABLE = False
+try:
+    import psutil
+    _PROCESS_MONITOR_AVAILABLE = True
+except Exception:
+    pass
+
+
+class MemoryMonitor:
+    """Poll CPU RAM and GPU VRAM usage of a process tree at a fixed interval."""
+
+    def __init__(self, pid: int, interval: float = 0.5):
+        """
+        Parameters
+        ----------
+        pid : int
+            Root process ID to monitor.
+        interval : float
+            Polling interval in seconds.
+        """
+        self._pid = pid
+        self._interval = interval
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        # Peak values
+        self.peak_cpu_bytes: int = 0
+        self.peak_gpu_bytes: Dict[int, int] = {}  # gpu_index -> peak used bytes
+        self._lock = threading.Lock()
+
+    @property
+    def peak_cpu_mb(self) -> float:
+        return self.peak_cpu_bytes / (1024 * 1024)
+
+    @property
+    def peak_gpu_mb(self) -> Dict[int, float]:
+        return {idx: used / (1024 * 1024) for idx, used in self.peak_gpu_bytes.items()}
+
+    def start(self):
+        """Start background monitoring thread."""
+        if not _PROCESS_MONITOR_AVAILABLE and not _GPU_MONITOR_AVAILABLE:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        """Signal the monitoring thread to stop and wait for it."""
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=5.0)
+
+    def _run(self):
+        """Background loop: poll memory until stopped."""
+        while not self._stop_event.is_set():
+            try:
+                # --- CPU memory (process tree) ---
+                try:
+                    proc = psutil.Process(self._pid)
+                    # Include all children
+                    total_rss = proc.memory_info().rss
+                    for child in proc.children(recursive=True):
+                        try:
+                            total_rss += child.memory_info().rss
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    with self._lock:
+                        if total_rss > self.peak_cpu_bytes:
+                            self.peak_cpu_bytes = total_rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+                # --- GPU memory (whole system – the COLMAP process is the main user) ---
+                gpu_info = _get_gpu_memory_usage()
+                with self._lock:
+                    for idx, (used, total) in gpu_info.items():
+                        prev = self.peak_gpu_bytes.get(idx, 0)
+                        if used > prev:
+                            self.peak_gpu_bytes[idx] = used
+
+            except Exception:
+                pass
+
+            self._stop_event.wait(self._interval)
+
+    def summary(self) -> str:
+        """Return a human-readable summary string."""
+        parts = []
+        if self.peak_cpu_bytes > 0:
+            parts.append(f"Peak CPU RAM: {self.peak_cpu_mb:.1f} MB")
+        if self.peak_gpu_bytes:
+            gpu_strs = []
+            for idx in sorted(self.peak_gpu_bytes.keys()):
+                gpu_strs.append(f"GPU-{idx}: {self.peak_gpu_mb[idx]:.1f} MB")
+            parts.append(f"Peak GPU VRAM: {', '.join(gpu_strs)}")
+        return " | ".join(parts) if parts else "(memory monitoring unavailable)"
+
 
 def check_operating_system():
     """
@@ -27,22 +212,39 @@ def check_operating_system():
     return os_type
 
 
-def run_subprocess(cmd: list, logger: Optional[logging.Logger] = None) -> int:
+def run_subprocess(
+    cmd: list,
+    logger: Optional[logging.Logger] = None,
+    monitor_memory: bool = False,
+    peak_memory: Optional[Dict] = None,
+) -> int:
     """
     Run a subprocess command, print stdout/stderr in real-time and save to log file.
     Windows compatible. Uses the provided logger (per-folder) if given.
-    
+
+    Parameters
+    ----------
+    cmd : list
+        Command and arguments as a list.
+    logger : logging.Logger, optional
+        Logger to use.  Falls back to a default "sfm" logger.
+    monitor_memory : bool
+        If True, track peak CPU RAM and GPU VRAM usage of the process tree
+        and log a summary when the process exits.  Requires psutil (CPU).
+        GPU monitoring tries: pynvml → torch.cuda → nvidia-smi.
+    peak_memory : dict, optional
+        If provided, this dict is updated with the cumulative peak memory
+        across multiple calls.  Keys: 'cpu_mb' (float), 'gpu_mb' (dict[int, float]).
+
     Returns:
         0 if the command succeeded, -1 if it failed or crashed.
     """
     if logger is None:
         logger = logging.getLogger("sfm")
 
-    # logger.info(f"Running command: {' '.join(cmd)}")
-
-    # Check if the logger has a StreamHandler attached that writes to stdout (robust check)
-    has_stdout_handler = any(
-        isinstance(h, logging.StreamHandler) and getattr(h, "stream", None) in (sys.stdout, getattr(sys, "__stdout__", None))
+    # Check if the logger has any StreamHandler attached (robust check)
+    has_stream_handler = any(
+        isinstance(h, logging.StreamHandler)
         for h in logger.handlers
     )
 
@@ -59,13 +261,30 @@ def run_subprocess(cmd: list, logger: Optional[logging.Logger] = None) -> int:
         logger.error(f"Error: Failed to start process: {e}")
         return -1
 
+    # ---- optional memory monitoring ----
+    mem_monitor: Optional[MemoryMonitor] = None
+    if monitor_memory:
+        mem_monitor = MemoryMonitor(pid=process.pid, interval=0.5)
+        mem_monitor.start()
+        if not _PROCESS_MONITOR_AVAILABLE:
+            logger.warning(
+                "Memory monitoring: psutil not installed (CPU RAM unavailable). "
+                "Install with: pip install psutil"
+            )
+        if _GPU_MONITOR_AVAILABLE:
+            logger.info(f"Memory monitoring: GPU VRAM via {_GPU_MONITOR_METHOD}")
+        else:
+            logger.warning(
+                "Memory monitoring: no GPU method available (VRAM unavailable). "
+                "Install nvidia-ml-py (pip install nvidia-ml-py) or ensure torch.cuda works."
+            )
+
     # Real-time printing and logging
     try:
         for line in process.stdout:
             line = line.rstrip()
             if line:
-                # If logger writes to stdout, rely on it (formatted). Otherwise, print to terminal (flush) to guarantee visibility.
-                if has_stdout_handler:
+                if has_stream_handler:
                     logger.info(line)
                 else:
                     print(line, flush=True)
@@ -74,12 +293,32 @@ def run_subprocess(cmd: list, logger: Optional[logging.Logger] = None) -> int:
         logger.error(f"Error reading process output: {e}")
         try:
             process.kill()
-        except:
+        except Exception:
             logger.error("Error: Failed to kill process after output read error.")
             pass
+        if mem_monitor is not None:
+            mem_monitor.stop()
         return -1
 
     process.wait()
+
+    # ---- report & accumulate memory usage ----
+    if mem_monitor is not None:
+        mem_monitor.stop()
+        summary = mem_monitor.summary()
+        if summary:
+            logger.info(f"Memory usage — {summary}")
+
+        # Update cumulative peak accumulator
+        if peak_memory is not None:
+            peak_memory.setdefault("cpu_mb", 0.0)
+            peak_memory.setdefault("gpu_mb", {})
+            if mem_monitor.peak_cpu_mb > peak_memory["cpu_mb"]:
+                peak_memory["cpu_mb"] = mem_monitor.peak_cpu_mb
+            for idx, used_mb in mem_monitor.peak_gpu_mb.items():
+                prev = peak_memory["gpu_mb"].get(idx, 0.0)
+                if used_mb > prev:
+                    peak_memory["gpu_mb"][idx] = used_mb
 
     if process.returncode != 0:
         logger.error(f"Command failed with exit code {process.returncode}.")
@@ -358,6 +597,7 @@ def find_directories_by_name(root_folder, target_name):
         if target_name in dirs:
             # 拼接出完整的绝对路径
             full_path = os.path.abspath(os.path.join(root, target_name))
+            print(f"find directory: {full_path}")
             matched_directories.append(full_path)
             
             # 优化提示：

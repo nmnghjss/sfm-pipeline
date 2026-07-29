@@ -261,11 +261,29 @@ def read_images_binary(path_to_model_file):
             qvec = np.array(binary_image_properties[1:5])
             tvec = np.array(binary_image_properties[5:8])
             camera_id = binary_image_properties[8]
-            image_name = ""
+            # Read raw bytes of the image name (null-terminated).
+            # Accumulate all bytes first, then decode once — this correctly
+            # handles multi-byte encodings (UTF-8, GBK, etc.) that COLMAP
+            # may write depending on the OS locale.
+            image_name_bytes = b""
             current_char = read_next_bytes(fid, 1, "c")[0]
             while current_char != b"\x00":  # look for the ASCII 0 entry
-                image_name += current_char.decode("utf-8")
+                image_name_bytes += current_char
                 current_char = read_next_bytes(fid, 1, "c")[0]
+            # Decode the image name with cascading fallback: UTF-8 first
+            # (modern standard), then GBK (Chinese Windows ANSI), then the
+            # OS filesystem encoding, finally surrogateescape as a never-
+            # crashing last resort.
+            try:
+                image_name = image_name_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                try:
+                    image_name = image_name_bytes.decode("gbk")
+                except UnicodeDecodeError:
+                    try:
+                        image_name = os.fsdecode(image_name_bytes)
+                    except UnicodeDecodeError:
+                        image_name = image_name_bytes.decode("utf-8", errors="surrogateescape")
             num_points2D = read_next_bytes(
                 fid, num_bytes=8, format_char_sequence="Q"
             )[0]
@@ -346,8 +364,11 @@ def write_images_binary(images, path_to_model_file):
             write_next_bytes(fid, img.qvec.tolist(), "dddd")
             write_next_bytes(fid, img.tvec.tolist(), "ddd")
             write_next_bytes(fid, img.camera_id, "i")
-            for char in img.name:
-                write_next_bytes(fid, char.encode("utf-8"), "c")
+            # Write image name as UTF-8 bytes (null-terminated).
+            # Encode the entire name first, then write each byte individually
+            # so that multi-byte sequences are handled correctly.
+            for byte_val in img.name.encode("utf-8"):
+                write_next_bytes(fid, bytes([byte_val]), "c")
             write_next_bytes(fid, b"\x00", "c")
             write_next_bytes(fid, len(img.point3D_ids), "Q")
             for xy, p3d_id in zip(img.xys, img.point3D_ids):

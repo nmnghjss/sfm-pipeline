@@ -104,3 +104,66 @@ def visualize_image_pairs(view_graph, images, image_path, output_dir, num_pairs=
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, combined_img)
         print(f"Saved visualization of image pair {idx} to {output_path}")
+
+
+def draw_keypoints_on_image(image_path, keypoints, output_path=None, color=(0, 255, 0),
+                            radius=3, thickness=-1, scores=None, max_points=None):
+    """
+    将特征点绘制在图像上。
+
+    Args:
+        image_path: 图像文件路径，或已加载的 numpy 图像 (H, W, 3)
+        keypoints: 特征点坐标，shape 为 (N, 2)，每行为 (x, y)
+        output_path: 输出图像保存路径，如果为 None 则返回图像数组
+        color: 点的颜色，默认为绿色 (0, 255, 0)
+        radius: 点的半径，默认 3
+        thickness: 点的线宽，-1 表示实心圆
+        scores: 可选，每个特征点的分数，用于颜色映射（高分红色，低分蓝色）
+        max_points: 可选，最多绘制的点数，随机采样
+    Returns:
+        如果 output_path 为 None，返回绘制后的 numpy 图像数组
+    """
+    # 加载图像
+    if isinstance(image_path, str):
+        img = cv2.imread(image_path)
+        if img is None:
+            raise FileNotFoundError(f"无法读取图像: {image_path}")
+    elif isinstance(image_path, np.ndarray):
+        img = image_path.copy()
+    else:
+        raise TypeError("image_path 需为文件路径字符串或 numpy 数组")
+
+    kpts = np.asarray(keypoints)
+    if kpts.ndim != 2 or kpts.shape[1] != 2:
+        raise ValueError(f"keypoints 需为 (N, 2) 形状，当前形状: {kpts.shape}")
+
+    # 限制绘制点数
+    if max_points is not None and max_points < len(kpts):
+        indices = np.random.choice(len(kpts), max_points, replace=False)
+        kpts = kpts[indices]
+        if scores is not None:
+            scores = np.asarray(scores)[indices]
+
+    # 根据分数映射颜色
+    if scores is not None:
+        scores = np.asarray(scores)
+        s_min, s_max = scores.min(), scores.max()
+        if s_max - s_min > 1e-6:
+            normalized = (scores - s_min) / (s_max - s_min)
+        else:
+            normalized = np.zeros_like(scores)
+        # 低分蓝色 -> 高分红色
+        for pt, norm in zip(kpts.astype(int), normalized):
+            c = (int(255 * (1 - norm)), 0, int(255 * norm))
+            cv2.circle(img, tuple(pt), radius, c, thickness)
+    else:
+        for pt in kpts.astype(int):
+            cv2.circle(img, tuple(pt), radius, color, thickness)
+
+    if output_path is not None:
+        os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
+        cv2.imwrite(output_path, img)
+        print(f"特征点图像已保存至: {output_path}")
+        return None
+    else:
+        return img

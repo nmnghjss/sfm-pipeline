@@ -105,6 +105,8 @@ def get_matches_importer_cmd(colmap_command: str,
                              max_feature_num: int = 2048,
                              min_num_inliers: int = 30,
                              min_inlier_ratio: float = 0.1, 
+                            max_distance=0.7,
+                            max_ratio=0.5,                                
                              two_view_geometry_max_error: float = 4.0,                            
                              sift_lightglue_match_path: str = "",
                              bruteforce_match_path: str = "",
@@ -125,8 +127,8 @@ def get_matches_importer_cmd(colmap_command: str,
         "--FeatureMatching.rig_verification", "0",
         "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
         "--FeatureMatching.max_num_matches", str(max_feature_num),
-        "--SiftMatching.max_ratio", "0.8",
-        "--SiftMatching.max_distance", "0.7",
+        "--SiftMatching.max_ratio", str(max_ratio), # 0.8
+        "--SiftMatching.max_distance", str(max_distance), # 0.7
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
@@ -166,7 +168,14 @@ def get_exhaustive_matcher_cmd(colmap_command: str,
                              sift_lightglue_match_path: str,
                              bruteforce_match_path: str,
                              aliked_lightglue_match_path: str,
+                             max_distance: float=0.7,
+                             max_ratio: float=0.8,
                              two_view_geometry_max_error: float=4.0):
+
+    if feature_match_type.lower().startswith("sift"):
+        guided_matching = "1"
+    else:
+        guided_matching = "0"
 
     exhaustive_matcher_cmd = [
         colmap_command, "exhaustive_matcher",
@@ -177,13 +186,13 @@ def get_exhaustive_matcher_cmd(colmap_command: str,
         # "--FeatureMatching.num_threads", str(args.num_threads),
         "--FeatureMatching.use_gpu", str(use_gpu),
         # "--FeatureMatching.gpu_index", str(args.gpu_index),
-        "--FeatureMatching.guided_matching", "0",
+        "--FeatureMatching.guided_matching", guided_matching,
         # "--FeatureMatching.skip_geometric_verification", str(args.skip_geometric_verification),
         "--FeatureMatching.rig_verification", "0",
         "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
         "--FeatureMatching.max_num_matches", str(max_feature_num),
-        "--SiftMatching.max_ratio", "0.8",
-        "--SiftMatching.max_distance", "0.7",
+        "--SiftMatching.max_ratio", str(max_ratio), # 0.8
+        "--SiftMatching.max_distance", str(max_distance), # 0.7
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
@@ -217,17 +226,24 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
                              database_path: str, 
                              feature_match_type: str, 
                              use_gpu: int,
-                             max_feature_num: int,
-                             min_num_inliers: int,
-                             min_inlier_ratio: float,
-                             two_view_geometry_max_error: float,
                              sift_lightglue_match_path: str,
                              bruteforce_match_path: str,
-                             aliked_lightglue_match_path: str,
-                             max_matches_per_image: int,
-                             vocab_feature_num: int,
-                             vocab_path: str):
+                             aliked_lightglue_match_path: str,                           
+                             vocab_path: str,
+                             vocab_feature_num: int = 0,                             
+                             max_feature_num: int = 2048,
+                             max_matches_per_image: int = 150,
+                             min_num_inliers: int = 15,
+                             min_inlier_ratio: float = 0.25,
+                             max_distance: float = 0.7,
+                             max_ratio: float = 0.5,                             
+                             two_view_geometry_max_error: float = 4.0
+                             ):
 
+    if feature_match_type.lower().startswith("sift"):
+        guided_matching = "1"
+    else:
+        guided_matching = "0"
     vocab_tree_matcher_cmd = [
         colmap_command, "vocab_tree_matcher",
         "--log_level", str(log_level),
@@ -236,13 +252,13 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
         "--FeatureMatching.gpu_index", "-1",
         "--FeatureMatching.type", feature_match_type,
         "--FeatureMatching.num_threads", "-1",        
-        "--FeatureMatching.guided_matching", "0",
+        "--FeatureMatching.guided_matching", guided_matching,
         "--FeatureMatching.skip_geometric_verification", "0",
         "--FeatureMatching.rig_verification", "0",
         "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
         "--FeatureMatching.max_num_matches", str(max_feature_num),
-        "--SiftMatching.max_ratio", "0.8",
-        "--SiftMatching.max_distance", "0.7",
+        "--SiftMatching.max_ratio", str(max_ratio),
+        "--SiftMatching.max_distance", str(max_distance),
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",

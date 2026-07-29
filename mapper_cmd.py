@@ -212,9 +212,12 @@ def get_global_mapper_cmd(colmap_command: str,
                    max_angular_reproj_error_deg: int = 1,
                    max_normalized_reproj_error: float = 0.01,
                    globalMapper_min_tri_angle_deg: int = 1,
+                   track_min_num_views_per_track: int = 3,
                    refine_focal_length: int = 1,
                    refine_principal_point: int = 1,
-                   refine_extra_params: int = 1):
+                   refine_extra_params: int = 1,
+                   final_min_num_points3D: int = 3,
+                   final_min_num_covisible_images: int = 3):
 
     mapper_cmd = [
         colmap_command, "global_mapper",
@@ -235,7 +238,7 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.skip_retriangulation", str(skip_retriangulation), # 0
         "--GlobalMapper.track_intra_image_consistency_threshold", "10",
         "--GlobalMapper.track_required_tracks_per_view", "2147483647",
-        "--GlobalMapper.track_min_num_views_per_track", "3",
+        "--GlobalMapper.track_min_num_views_per_track", str(track_min_num_views_per_track),#3
         "--GlobalMapper.gp_use_gpu", str(use_gpu), # 1
         "--GlobalMapper.gp_gpu_index", "-1",
         "--GlobalMapper.gp_optimize_positions", str(gp_optimize_positions),
@@ -268,6 +271,8 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.max_angular_reproj_error_deg", str(max_angular_reproj_error_deg),
         "--GlobalMapper.max_normalized_reproj_error", str(max_normalized_reproj_error),
         "--GlobalMapper.min_tri_angle_deg", str(globalMapper_min_tri_angle_deg), #1
+        "--GlobalMapper.min_num_points3D", str(final_min_num_points3D),
+        "--GlobalMapper.min_num_covisible_images", str(final_min_num_covisible_images),
     ]
     return mapper_cmd
 
@@ -496,13 +501,15 @@ def get_ba_cmd(colmap_command: str,
                max_num_iterations: int = 100,
                max_linear_solver_iterations: int = 200,
                gradient_tolerance: float = 0.0001,
-               use_gpu: int = 0):
+               use_gpu: int = 1,
+               ba_backend: str = "CERES"):
 
     ba_cmd = [
         colmap_command, "bundle_adjuster",
         "--input_path", input_path,
         "--output_path", output_path,
         "--log_level", str(log_level),
+        "--BundleAdjustment.backend", str(ba_backend),
         "--BundleAdjustment.refine_focal_length", str(refine_focal_length),
         "--BundleAdjustment.refine_principal_point", str(refine_principal_point),
         "--BundleAdjustment.refine_extra_params", str(refine_extra_params),
@@ -523,7 +530,20 @@ def get_ba_cmd(colmap_command: str,
         "--BundleAdjustmentCeres.max_num_images_direct_dense_cpu_solver", "50",
         "--BundleAdjustmentCeres.max_num_images_direct_sparse_cpu_solver", "1000",
         "--BundleAdjustmentCeres.max_num_images_direct_dense_gpu_solver", "200",
-        "--BundleAdjustmentCeres.max_num_images_direct_sparse_gpu_solver", "4000"
+        "--BundleAdjustmentCeres.max_num_images_direct_sparse_gpu_solver", "4000",
+        "--BundleAdjustmentCaspar.solver_iter_max", "200",
+        "--BundleAdjustmentCaspar.pcg_iter_max", "20",
+        "--BundleAdjustmentCaspar.diag_init", "1",
+        "--BundleAdjustmentCaspar.diag_min", "1e-12",
+        "--BundleAdjustmentCaspar.diag_scaling_up", "2",
+        "--BundleAdjustmentCaspar.diag_scaling_down", "0.333",
+        "--BundleAdjustmentCaspar.diag_exit_value", "1e+03",
+        "--BundleAdjustmentCaspar.score_exit_value", "0",
+        "--BundleAdjustmentCaspar.pcg_rel_error_exit", "0.0001",
+        "--BundleAdjustmentCaspar.pcg_rel_score_exit", "-1",
+        "--BundleAdjustmentCaspar.pcg_rel_decrease_min", "-1",
+        "--BundleAdjustmentCaspar.solver_rel_decrease_min", "1",
+        "--BundleAdjustmentCaspar.gpu_index", "-1"
     ]
     return ba_cmd
 

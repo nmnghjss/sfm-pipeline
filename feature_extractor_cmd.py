@@ -21,6 +21,12 @@ def get_feature_extractor_cmd(colmap_command: str,
                           use_gpu: int = 1,
                           max_image_size: int = 4096,
                           max_feature_num: int = 8192,
+                          max_feature_num_final: int = 1024,
+                          sift_first_octave: int = -1, # -1
+                          sift_num_octaves: int = 4, # 4
+                          sift_octave_resolution: int = 3, # 3
+                          sift_peak_threshold: float = 0.00667, # 0.00667
+                          sift_edge_threshold: float = 10.0,    
                           aliked_n16rot_path: str = "models/aliked_n16rot.pt",
                           aliked_n32_path: str = "models/aliked_n32.pt"):
     feat_extraction_cmd = [
@@ -43,20 +49,22 @@ def get_feature_extractor_cmd(colmap_command: str,
         "--FeatureExtraction.gpu_index","-1",
         "--FeatureExtraction.max_image_size", str(max_image_size),
         "--SiftExtraction.max_num_features", str(max_feature_num),
-        # "--SiftExtraction.first_octave", str(args.first_octave),
-        # "--SiftExtraction.num_octaves", str(args.num_octaves),
-        # "--SiftExtraction.octave_resolution", str(args.octave_resolution),
-        # "--SiftExtraction.peak_threshold", str(args.peak_threshold),
-        # "--SiftExtraction.edge_threshold", str(args.edge_threshold),
+        "--SiftExtraction.max_num_features_final", str(max_feature_num_final),
+        "--SiftExtraction.first_octave", str(sift_first_octave), # -1
+        "--SiftExtraction.num_octaves", str(sift_num_octaves), # 4
+        "--SiftExtraction.octave_resolution", str(sift_octave_resolution), # 3
+        "--SiftExtraction.peak_threshold", str(sift_peak_threshold), # 0.00667
+        "--SiftExtraction.edge_threshold", str(sift_edge_threshold), # 10
         # "--SiftExtraction.estimate_affine_shape", str(args.estimate_affine_shape),
         # "--SiftExtraction.max_num_orientations", str(args.max_num_orientations),
         # "--SiftExtraction.upright", str(args.upright),
-        "--SiftExtraction.domain_size_pooling", "0",
-        "--SiftExtraction.dsp_min_scale", "0.167",
-        "--SiftExtraction.dsp_max_scale", "3",
-        "--SiftExtraction.dsp_num_scales", "10",
+        # "--SiftExtraction.domain_size_pooling", "0",
+        # "--SiftExtraction.dsp_min_scale", "0.167",
+        # "--SiftExtraction.dsp_max_scale", "3",
+        # "--SiftExtraction.dsp_num_scales", "10",
         "--AlikedExtraction.max_num_features", str(max_feature_num),
-        "--AlikedExtraction.min_score", "0.2",
+        "--AlikedExtraction.max_num_features_final", str(max_feature_num_final),
+        "--AlikedExtraction.min_score", "0.2", # 0.2
         "--AlikedExtraction.n16rot_model_path", aliked_n16rot_path,
         "--AlikedExtraction.n32_model_path", aliked_n32_path
     ]

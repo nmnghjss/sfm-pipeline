@@ -139,6 +139,52 @@ def float_descriptors_to_uint8(descriptors: np.ndarray, descriptor_type: int) ->
         raise ValueError(f"Unsupported descriptor type: {descriptor_type}")
 
 
+def read_all_keypoints(database_path):
+    """
+    从 COLMAP 数据库中读取所有图像的特征点。
+
+    Args:
+        database_path: COLMAP 数据库文件路径 (.db)
+
+    Returns:
+        dict: {image_id: np.ndarray of shape (N, 2)}, 其中每行为 (x, y) 坐标
+              同时返回一个 image_name 映射: dict: {image_id: filename}
+    """
+    db = COLMAPDatabase.connect(database_path)
+    keypoints_dict = {}
+    image_names = {}
+
+    # 读取图像名称映射
+    for image_id, name in db.execute("SELECT image_id, name FROM images"):
+        image_names[image_id] = name
+
+    # 读取所有特征点
+    for image_id, cols, data in db.execute(
+        "SELECT image_id, cols, data FROM keypoints WHERE data IS NOT NULL"
+    ):
+        kpts = blob_to_array(data, np.float32, (-1, cols))
+        keypoints_dict[image_id] = kpts[:, :2]  # 只取 (x, y)
+
+    db.close()
+    return keypoints_dict, image_names
+
+
+def get_matched_image_pairs(database_path):
+    """
+    读取 COLMAP 数据库中匹配图像对的个数。
+
+    Args:
+        database_path: COLMAP 数据库文件路径 (.db)
+
+    Returns:
+        int: 匹配图像对的总数
+    """
+    db = COLMAPDatabase.connect(database_path)
+    row = db.execute("SELECT COUNT(*) FROM matches").fetchone()
+    db.close()
+    return row[0] if row else 0
+
+
 class COLMAPDatabase(sqlite3.Connection):
 
     @staticmethod
@@ -602,6 +648,17 @@ def initialize_colmap_database(
 
     logger.info("Initializing COLMAP database without feature extraction...")
     logger.info(f"Camera assignment mode: {camera_assignment}")
+
+    # Remove existing database file to ensure a clean schema (avoids
+    # column-count mismatch when a prior run left a standard-COLMAP
+    # images table with only 3 columns instead of our extended 10).
+    if os.path.exists(database_path):
+        logger.info(f"Removing existing database: {database_path}")
+        try:
+            os.remove(database_path)
+        except OSError as exc:
+            logger.error(f"Failed to remove existing database: {exc}")
+            return False
 
     try:
         db = COLMAPDatabase.connect(database_path)

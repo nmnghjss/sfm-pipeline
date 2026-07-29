@@ -15,6 +15,7 @@ from mapper_cmd import (
     get_pos_prior_mapper_cmd,
     get_reconstruction_refine_cmd,
 )
+from record_param import record_args
 from utils import (
     delete_directory,
     run_subprocess,
@@ -26,8 +27,8 @@ from utils import (
     clear_folder,
     move_files,
 )
-from database import ReadColmapDatabase, filter_matches_by_inliers
-from visualization import visualize_image_pairs
+from database import ReadColmapDatabase, filter_matches_by_inliers, read_all_keypoints, get_matched_image_pairs
+from visualization import visualize_image_pairs, draw_keypoints_on_image
 from calibration_utils import load_calibration, map_subfolders_to_camera_configs
 
 from match_utils import compute_matched_image_pairs_by_pose_prior
@@ -50,7 +51,7 @@ parser.add_argument("--ba_global_backend", default="CERES", type=str, choices=["
 parser.add_argument("--source_path", "-s", default="E:\\debug", type=str)
 parser.add_argument("--output_path", "-o", default="output-debug", type=str)
 parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
-parser.add_argument("--default_focal_length_factor", default=1.0, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
+parser.add_argument("--default_focal_length_factor", default=1.2, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
 parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--refine_focal_length", type=int, default=1, help="Whether to refine focal length during bundle adjustment")
 parser.add_argument("--refine_principal_point", type=int, default=1, help="Whether to refine principal point during bundle adjustment")
@@ -66,20 +67,36 @@ parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", c
 parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
 parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
-parser.add_argument("--min_num_inliers", type=int, default=30, help="Minimum number of inliers for a valid match")
+parser.add_argument("--max_feature_num", "-mfn", default=8000, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--max_feature_num_final", "-mfnf", default=1600, type=int, help="Maximum number of features to retain per image after final selection")
+parser.add_argument("--sift_peak_threshold", "-spt", default=0.02, type=float, help="SIFT peak threshold for feature extraction")
+parser.add_argument("--sift_first_octave", "-sfo", default=0, type=int, help="SIFT first octave for feature extraction")
+parser.add_argument("--sift_match_max_distance", "-smmd", default=0.6, type=float, help="SIFT match max distance for feature matching")
+parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.6, type=float, help="SIFT match max ratio for feature matching")
+parser.add_argument("--min_num_inliers", type=int, default=15, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
 parser.add_argument("--two_view_geometry_max_error", "-tvgme", type=float, default=4.0, help="two viw geometry max error")
 parser.add_argument("--filt_match", action="store_true", help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.5, help="Inlier ratio threshold for filtering matches before mapping")
-parser.add_argument("--filter_inlier_num_threshold", type=int, default=30, help="Inlier number threshold for filtering matches before mapping")
+parser.add_argument("--filter_inlier_num_threshold", type=int, default=15, help="Inlier number threshold for filtering matches before mapping")
+parser.add_argument("--ra_max_rotation_error_deg", type=float, default=10.0, help="Maximum rotation error in degrees for rotation averaging")
+parser.add_argument("--ra_max_rotation_error_final_deg", type=float, default=10.0, help="Maximum rotation error in degrees for final rotation averaging")
+parser.add_argument("--ra_refilt_outlier_pairs_num", type=int, default=5, help="Number of outlier pairs to re-filter in rotation averaging")
+parser.add_argument("--gp_max_num_iterations", type=int, default=200, help="Maximum number of iterations for global positioning")
+parser.add_argument("--ba_ceres_max_num_iterations", type=int, default=200, help="Maximum number of iterations for Ceres bundle adjustment")
+parser.add_argument("--max_normalized_reproj_error", type=float, default=0.01, help="Maximum normalized reprojection error")
+parser.add_argument("--global_mapper_min_tri_angle_deg", type=float, default=1.0, help="Minimum triangulation angle in degrees for global mapper")
+parser.add_argument("--track_min_num_views_per_track", type=int, default=4, help="Minimum number of views per track")
+parser.add_argument("--final_min_num_points3d", type=int, default=3, help="Final minimum number of 3D points")
+parser.add_argument("--final_min_num_covisible_images", type=int, default=3, help="Final minimum number of covisible images")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
+parser.add_argument("--visualize_keypoints", "-viskpts", action="store_true", help="Whether to visualize all keypoints on each image")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
 parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
 parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
-parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=100,
+parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=150,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=10,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
@@ -90,7 +107,9 @@ parser.add_argument("--voxel_size", type=float, default=0.01, help="Voxel size f
 parser.add_argument("--max_angle", type=float, default=70, help="Maximum angle (in degrees) between camera views for AR pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for AR pose-based image pair generation")
 parser.add_argument("--refine_num", type=int, default=1, help="refine reconstruction iterations num")
+parser.add_argument("--undistort", action="store_true", help="Whether to undistort images after reconstruction")
 parser.add_argument("--unify_output_images", action="store_true")
+parser.add_argument("--monitor_memory", action="store_true", help="Monitor and report peak CPU RAM and GPU VRAM usage of COLMAP processes")
 args = parser.parse_args()
 
 
@@ -121,7 +140,7 @@ logger = logging.getLogger()
 logger.setLevel(log_level)
 
 # Console handler
-ch = logging.StreamHandler()
+ch = logging.StreamHandler(sys.stdout)
 ch.setLevel(log_level)
 ch.setFormatter(log_formatter)
 logger.addHandler(ch)
@@ -136,6 +155,8 @@ fh.setLevel(log_level)
 fh.setFormatter(log_formatter)
 logger.addHandler(fh)
 
+# =========================== Record parameters to log file ==========================
+record_args(logger, args)
 
 # ============================ Timeing variables ===============================
 start_time = time.time()
@@ -147,6 +168,9 @@ triangulate_time = 0
 ba_time = 0
 refine_time = 0
 mapper_time = 0
+
+# ===================== Memory monitoring accumulator ============================
+peak_memory: dict = {}  # populated by run_subprocess when --monitor_memory is set
 
 # =====================key parameter =====================================================
 min_num_inliers = args.min_num_inliers
@@ -294,21 +318,21 @@ if args.init_camera:
         camera_assignment = "per_image"
 
     logger.info("Initializing COLMAP database with image metadata ...")
-    # db_init_success = initialize_colmap_database(
-    #     database_path=database_path,
-    #     images_dir= images_dir,
-    #     input_images_path=images_full_path,
-    #     camera_model=args.camera,
-    #     camera_assignment=camera_assignment,
-    #     prior_fx=prior_focal_length,
-    #     prior_fy=prior_focal_length,
-    #     camera_params=camera_params,
-    #     subfolder_camera_configs=subfolder_configs,
-    #     logger=logger
-    # )    
-    # if not db_init_success:
-    #     logger.error("Failed to initialize database!")
-    #     sys.exit(1)
+    db_init_success = initialize_colmap_database(
+        database_path=database_path,
+        images_dir= images_dir,
+        input_images_path=images_full_path,
+        camera_model=args.camera,
+        camera_assignment=camera_assignment,
+        prior_fx=prior_focal_length,
+        prior_fy=prior_focal_length,
+        camera_params=camera_params,
+        subfolder_camera_configs=subfolder_configs,
+        logger=logger
+    )    
+    if not db_init_success:
+        logger.error("Failed to initialize database!")
+        sys.exit(1)
 
 
 # ========================= Feature extraction ==================================
@@ -347,14 +371,41 @@ else:
         use_gpu=use_gpu,
         max_image_size=args.max_image_size,
         max_feature_num=args.max_feature_num,
+        max_feature_num_final=args.max_feature_num_final,
+        sift_peak_threshold=args.sift_peak_threshold,
+        sift_first_octave=args.sift_first_octave,
         aliked_n16rot_path=aliked_n16rot_path,
         aliked_n32_path=aliked_n32_path
     )
     logger.info("Starting feature extraction with COLMAP SIFT...")
     t0 = time.time()
-    run_subprocess(feat_extraction_cmd, logger)
+    run_subprocess(feat_extraction_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
     feature_extraction_time = time.time() - t0
     logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
+
+
+# ========================= Visualize keypoints (optional) =========================
+if args.visualize_keypoints:
+    logger.info("Visualizing all keypoints on images...")
+    keypoints_dict, image_names = read_all_keypoints(database_path)
+    if not keypoints_dict:
+        logger.warning("No keypoints found in database, skipping keypoint visualization")
+    else:
+        vis_kpts_dir = os.path.join(output_path, 'keypoints_vis')
+        os.makedirs(vis_kpts_dir, exist_ok=True)
+        for img_id, kpts in keypoints_dict.items():
+            img_name = image_names[img_id]
+            img_path = os.path.join(images_dir, img_name)
+            if not os.path.exists(img_path):
+                logger.warning(f"Image not found: {img_path}, skipping")
+                continue
+            # 输出路径使用相对路径名避免嵌套目录
+            safe_name = img_name.replace('/', '_').replace('\\', '_')
+            kp_vis_output_path = os.path.join(vis_kpts_dir, f"kpts_{safe_name}")
+            draw_keypoints_on_image(img_path, kpts, kp_vis_output_path, max_points=5000, radius=20)
+            logger.info(f"  Visualized {len(kpts)} keypoints on {img_name}")
+        logger.info(f"Keypoint visualization saved to: {vis_kpts_dir}")
+
 
 # ========================= Feature matching =========================
 logger.info("Starting feature matching...")
@@ -402,7 +453,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         bruteforce_match_path = bruteforce_match_path,
         aliked_lightglue_match_path = aliked_lightglue_match_path
     )
-    run_subprocess(matches_importer_cmd, logger)
+    run_subprocess(matches_importer_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
     feature_matching_time = time.time() - match_start + pre_match_time
     logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
 
@@ -418,6 +469,8 @@ else:
             max_feature_num=args.max_feature_num*4,
             min_num_inliers=min_num_inliers,
             min_inlier_ratio=min_inlier_ratio,
+            max_distance=args.sift_match_max_distance,
+            max_ratio=args.sift_match_max_ratio,
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
             aliked_lightglue_match_path=aliked_lightglue_match_path,
@@ -479,23 +532,28 @@ else:
             database_path=database_path,
             feature_match_type=feature_match_type,
             use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num * 4,
-            min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio,
-            two_view_geometry_max_error=args.two_view_geometry_max_error,
             sift_lightglue_match_path=sift_lightglue_match_path,
             bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,     
+            vocab_path=vocab_path,                   
+            max_feature_num=args.max_feature_num * 4,
             max_matches_per_image=args.max_matches_per_image,
-            vocab_feature_num=args.vocab_feature_num,
-            vocab_path=vocab_path
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            max_distance=args.sift_match_max_distance,
+            max_ratio=args.sift_match_max_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error,
+            vocab_feature_num=0
         )
     else:
         logger.error(f"Unsupported match strategy: {args.match_strategy}")
         sys.exit(1)
-    run_subprocess(feat_matching_cmd, logger)
+    run_subprocess(feat_matching_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
     feature_matching_time = time.time() - match_start + pre_match_time
     logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
+
+matched_image_pairs_num = get_matched_image_pairs(database_path)
+logger.info(f"Total matched image pairs: {matched_image_pairs_num}")
 
 # ========================= Filter matches by inliers (optional) =========================
 if args.filt_match:
@@ -515,16 +573,16 @@ view_graph_calibrate_cmd = [
     "--log_level", str(log_level),
     "--database_path", database_path,
     "--cross_validate_prior_focal_lengths", "1",
-    "--min_calibrated_pair_ratio", "0.7", # 0.5
-    "--reestimate_relative_pose", "1",
+    "--min_calibrated_pair_ratio", "0.5", # 0.5
+    "--reestimate_relative_pose", "1", # 1
     "--min_focal_length_ratio", "0.1",
     "--max_focal_length_ratio", "10",
     "--max_calibration_error", "2", # 2
     "--relpose_max_error", "1", # 1
-    "--relpose_min_num_inliers", "100", # 30
-    "--relpose_min_inlier_ratio", "0.1", # 0.25
+    "--relpose_min_num_inliers", str(min_num_inliers), # 30
+    "--relpose_min_inlier_ratio", "0.25", #str(min_inlier_ratio), # 0.25
 ]
-run_subprocess(view_graph_calibrate_cmd, logger)
+run_subprocess(view_graph_calibrate_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 view_graph_calibrate_time = time.time() - view_graph_calibrate_start
 logger.info(f"View graph calibrate done in {view_graph_calibrate_time:.2f} s")
 
@@ -608,13 +666,6 @@ elif args.mapper == "hierarchical_acc":
     )
 elif args.mapper == "global":
     logger.info("Using global mapper...")
-    ra_max_rotation_error_deg = 10.0
-    ra_max_rotation_error_final_deg = 10.0
-    ra_refilt_outlier_paisrs_num = 10
-    gp_max_num_iterations = 100
-    ba_ceres_max_num_iterations = 200
-    max_normalized_reproj_error = 0.01
-    globalMapper_min_tri_angle_deg = 1.0
     mapper_cmd = get_global_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -625,16 +676,17 @@ elif args.mapper == "global":
         ba_backend=args.ba_global_backend,
         min_num_inliers=min_num_inliers,
         ba_num_iterations=3,
-        gp_max_num_iterations=gp_max_num_iterations,
-        ba_ceres_max_num_iterations=ba_ceres_max_num_iterations,
-        ra_max_rotation_error_deg=ra_max_rotation_error_deg,
-        ra_max_rotation_error_final_deg=ra_max_rotation_error_final_deg,
-        ra_refilt_outlier_paisrs_num=ra_refilt_outlier_paisrs_num,
-        max_normalized_reproj_error=max_normalized_reproj_error,
-        globalMapper_min_tri_angle_deg=globalMapper_min_tri_angle_deg,
+        gp_max_num_iterations=args.gp_max_num_iterations,
+        ba_ceres_max_num_iterations=args.ba_ceres_max_num_iterations,
+        ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
+        ra_max_rotation_error_final_deg=args.ra_max_rotation_error_final_deg,
+        ra_refilt_outlier_paisrs_num=args.ra_refilt_outlier_pairs_num,
+        max_normalized_reproj_error=args.max_normalized_reproj_error,
+        globalMapper_min_tri_angle_deg=args.global_mapper_min_tri_angle_deg,
         tri_complete_max_reproj_error=15, #15
         tri_merge_max_reproj_error=15, #15
         tri_min_angle= 1, #1   
+        track_min_num_views_per_track=args.track_min_num_views_per_track,
         refine_focal_length=args.refine_focal_length,
         refine_principal_point=args.refine_principal_point,
         refine_extra_params=args.refine_extra_params    
@@ -659,7 +711,7 @@ elif args.mapper == "pose_prior_incremental":
         tri_re_max_angle_error = 5.0 # 5       
     )
     triangulate_start = time.time()
-    run_subprocess(triangulate_cmd, logger)
+    run_subprocess(triangulate_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
     triangulate_time = time.time() - triangulate_start
     logger.info(f"Pose prior triangulation completed in {triangulate_time:.2f} s")
 
@@ -671,7 +723,7 @@ elif args.mapper == "pose_prior_incremental":
         input_path=distorted_sparse_path,
         output_path=distorted_sparse_path,
         refine_focal_length=1,
-        refine_principal_point=0,
+        refine_principal_point=1,
         refine_extra_params=1,
         refine_rig_from_world=1,
         refine_sensor_from_rig=1,
@@ -682,15 +734,13 @@ elif args.mapper == "pose_prior_incremental":
         gradient_tolerance=0.0001,
         use_gpu=0
     )    
-    run_subprocess(ba_cmd, logger)
+    run_subprocess(ba_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 
     ba_time = time.time() - ba_start
     logger.info(f"Pose prior increment mapper bundle adjustment completed in {ba_time:.2f} s")
 elif args.mapper == "pose_prior_global":
     logger.info("Using global mapper with pose prior...")
-    ra_max_rotation_error_deg = 10.0
-    globalMapper_min_tri_angle_deg = 3.0    
-    max_normalized_reproj_error = 0.01
+    max_normalized_reproj_error = args.max_normalized_reproj_error
     if prior_focal_length is not None:
         max_normalized_reproj_error = 3 / prior_focal_length
         logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
@@ -705,8 +755,8 @@ elif args.mapper == "pose_prior_global":
         use_gpu=use_gpu,
         min_num_inliers=min_num_inliers,
         ba_num_iterations=3,
-        gp_max_num_iterations=100,
-        ba_ceres_max_num_iterations=200,
+        gp_max_num_iterations=args.gp_max_num_iterations,
+        ba_ceres_max_num_iterations=args.ba_ceres_max_num_iterations,
         skip_rotation_averaging=0,
         skip_rotation_averaging_initialization=1,
         skip_track_establishment=0,
@@ -718,8 +768,8 @@ elif args.mapper == "pose_prior_global":
         ba_skip_joint_optimization_stage=0,
         max_angular_reproj_error_deg=1.0,
         max_normalized_reproj_error=max_normalized_reproj_error,
-        ra_max_rotation_error_deg=ra_max_rotation_error_deg,
-        min_tri_angle_deg=globalMapper_min_tri_angle_deg,
+        ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
+        min_tri_angle_deg=args.global_mapper_min_tri_angle_deg,
         tri_complete_max_reproj_error=5, #15
         tri_merge_max_reproj_error=5, #15
         tri_min_angle= 2, #1          
@@ -777,9 +827,8 @@ else:
         filter_max_reproj_error=4.0, #4
         filter_min_tri_angle=1.5 #1.5
     )
-
 if args.mapper != "pose_prior_incremental":
-    run_subprocess(mapper_cmd, logger)
+    run_subprocess(mapper_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 else:
     if args.refine_num > 0:
         refine_start = time.time()
@@ -804,29 +853,62 @@ else:
             tri_merge_max_reproj_error= 5.0)
         for it in range(0, args.refine_num):
             logger.info(f" {it + 1} / {args.refine_num} reconstruction refine")
-            run_subprocess(refine_cmd, logger)
+            run_subprocess(refine_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
         refine_time = time.time() - refine_start        
 mapper_time = time.time() - mapper_start + view_graph_calibrate_time
 logger.info(f"Mapper done in {mapper_time:.2f} s")
 
+## ======================== Final bundle adjustment with Ceres (optional) =========================
+final_ceres_ba_time = 0
+if args.ba_local_backend == "CASPAR" or args.ba_global_backend == "CASPAR":
+    largest_sparse_folder = get_largest_subfolder(distorted_sparse_path)
+    final_ceres_ba_start = time.time()
+    ba_cmd = get_ba_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        input_path=largest_sparse_folder,
+        output_path=largest_sparse_folder,
+        refine_focal_length=args.refine_focal_length,
+        refine_principal_point=args.refine_principal_point,
+        refine_extra_params=args.refine_extra_params,
+        refine_rig_from_world=1,
+        refine_sensor_from_rig=1,
+        refine_points3D=1,
+        min_track_length=0,
+        max_num_iterations=200,
+        max_linear_solver_iterations=200,
+        gradient_tolerance=0.0001,
+        use_gpu=1,
+        ba_backend="CERES"
+    )    
+    run_subprocess(ba_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+
+    final_ceres_ba_time = time.time() - final_ceres_ba_start    
+    mapper_time += final_ceres_ba_time
+    logger.info(f"Final Ceres bundle adjustment done in {final_ceres_ba_time:.2f} s")
+
 # ========================= Image undistortion =========================
 # input("Press Enter to start image undistortion...")
-statr_undistort = time.time()
-input_subdirs = get_subfolders_names(images_dir)
-for subdir in input_subdirs:
-    output_subdir_path = os.path.join(output_path, "images", subdir)
-    os.makedirs(output_subdir_path, exist_ok=True)
+start_undistort = time.time()
 largest_sparse_folder = get_largest_subfolder(distorted_sparse_path)
 logger.info(f"largest_sparse_folder: {largest_sparse_folder}")
-img_undist_cmd = [
-    colmap_command, "image_undistorter",
-    "--image_path", images_dir,
-    "--input_path", largest_sparse_folder,
-    "--output_path", output_path,
-    "--output_type", "COLMAP"
-]
-run_subprocess(img_undist_cmd, logger)
-undistort_time = time.time() - statr_undistort
+images_pose = read_images_binary(os.path.join(largest_sparse_folder, "images.bin"))
+registered_images_num = len(images_pose)
+if args.undistort:
+    input_subdirs = get_subfolders_names(images_dir)
+    for subdir in input_subdirs:
+        output_subdir_path = os.path.join(output_path, "images", subdir)
+        os.makedirs(output_subdir_path, exist_ok=True)
+
+    img_undist_cmd = [
+        colmap_command, "image_undistorter",
+        "--image_path", images_dir,
+        "--input_path", largest_sparse_folder,
+        "--output_path", output_path,
+        "--output_type", "COLMAP"
+    ]
+    run_subprocess(img_undist_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+undistort_time = time.time() - start_undistort
 logger.info(f"Image undistortion done, used time: {undistort_time:.2f} s.")
 
 # ========================= Organize sparse output to sparse/0 =============
@@ -846,7 +928,7 @@ for item in os.listdir(sparse_output_path):
         os.rmdir(src_path)
     elif os.path.isfile(src_path):
         shutil.move(src_path, dst_path)
-img_num, _ = count_images_in_dir_recursive(os.path.join(output_path, "images"))
+# registered_images_num, _ = count_images_in_dir_recursive(os.path.join(output_path, "images"))
 logger.info("Sparse output successfully organized into sparse/0.")
 
 # ========================= Rename iamge name in colmap results and move all images to output/images (if needed) =========================
@@ -884,18 +966,33 @@ if args.unify_output_images:
 # --------------------------
 total_time = time.time() - start_time
 sparse_reconstruction_time = feature_extraction_time + feature_matching_time + mapper_time
-# pair_match_time = feature_matching_time / (input_img_num * (input_img_num - 1) / 2) if input_img_num > 1 else 0
+pair_match_time = feature_matching_time / matched_image_pairs_num if matched_image_pairs_num > 0 else 0
 
 logger.info("Done. Timing statistics:")
 logger.info(f"  Feature extraction: {int(feature_extraction_time // 60)} min {feature_extraction_time % 60:.2f} s")
 logger.info(f"  Feature matching: {int(feature_matching_time // 60)} min {feature_matching_time % 60:.2f} s")
-# logger.info(f"  Average time per image pair: {pair_match_time * 1000:.2f} ms")
+logger.info(f"  Matched image pairs: {matched_image_pairs_num}")
+logger.info(f"  Average time per image pair: {pair_match_time * 1000:.2f} ms")
 logger.info(f"  View Grpha Calibrate time: {int(view_graph_calibrate_time // 60)} min {view_graph_calibrate_time % 60:.2f} s")
 logger.info(f"  Triangulation time: {int(triangulate_time // 60)} min {triangulate_time % 60:.2f} s")
 logger.info(f"  Bundle Adjustment time: {int(ba_time // 60)} min {ba_time % 60:.2f} s")
+logger.info(f"  Final Ceres BA time: {int(final_ceres_ba_time // 60)} min {final_ceres_ba_time % 60:.2f} s")
 logger.info(f"  Refine time: {int(refine_time // 60)} min {refine_time % 60:.2f} s")
 logger.info(f"  Mapper: {int(mapper_time // 60)} min {mapper_time % 60:.2f} s")
 logger.info(f"  Sparse reconstruction: {int(sparse_reconstruction_time // 60)} min {sparse_reconstruction_time % 60:.2f} s")
 logger.info(f"  Image undistortion: {int(undistort_time // 60)} min {undistort_time % 60:.2f} s")
 logger.info(f"  Total time: {int(total_time // 60)} min {total_time % 60:.2f} s")
-logger.info(f"  Number of images registered: {img_num} / {input_img_num}")
+logger.info(f"  Number of images registered: {registered_images_num} / {input_img_num}")
+
+# ---- cumulative peak memory summary ----
+if peak_memory and (peak_memory.get("cpu_mb", 0) > 0 or peak_memory.get("gpu_mb")):
+    parts = []
+    cpu_mb = peak_memory.get("cpu_mb", 0)
+    if cpu_mb > 0:
+        parts.append(f"Peak CPU RAM: {cpu_mb:.1f} MB")
+    gpu_mb = peak_memory.get("gpu_mb", {})
+    if gpu_mb:
+        gpu_strs = [f"GPU-{idx}: {used:.1f} MB" for idx, used in sorted(gpu_mb.items())]
+        parts.append(f"Peak GPU VRAM: {', '.join(gpu_strs)}")
+    if parts:
+        logger.info(f"  ** Cumulative peak memory — {' | '.join(parts)} **")
