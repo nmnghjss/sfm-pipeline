@@ -95,11 +95,11 @@ def visualize_image_pairs(view_graph, images, image_path, output_dir, num_pairs=
                     # 在图像上绘制点和连线，使用相同的颜色
                     cv2.circle(combined_img, pt1, 3, color, -1)
                     cv2.circle(combined_img, pt2_shifted, 3, color, -1)
-                    cv2.line(combined_img, pt1, pt2_shifted, color, 1)
+                    cv2.line(combined_img, pt1, pt2_shifted, color, 3)
         
         # 生成输出文件名：使用图像1和图像2的文件名（去除后缀后用_连接）
-        name1 = os.path.splitext(image_name1)[0]
-        name2 = os.path.splitext(image_name2)[0]
+        name1 = os.path.splitext(image_name1)[0].replace('/', '_').replace('\\', '_')
+        name2 = os.path.splitext(image_name2)[0].replace('/', '_').replace('\\', '_')
         output_filename = f"{name1}_{name2}_{len(matches)}_{image_pair.matches_init_num}.jpg"
         output_path = os.path.join(output_dir, output_filename)
         cv2.imwrite(output_path, combined_img)

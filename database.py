@@ -558,50 +558,42 @@ def initialize_colmap_database(
     input_images_path: list,
     camera_model: str = "OPENCV",
     camera_assignment: str = "per_subfolder",
-    prior_fx = None,
-    prior_fy = None,
-    camera_params = None,
-    subfolder_camera_configs: dict = None,    
-    image_camera_configs: dict = None,
+    prior_cameras: dict = None,
+    prior_images: list = None,
     logger: logging.Logger = None
 ) -> bool:
     """
     Initialize COLMAP database and add image metadata without extracting SIFT features.
 
-    Supports three camera assignment modes via the ``camera_assignment`` parameter:
-    
+    When ``prior_cameras`` / ``prior_images`` are provided (e.g. from a prior pose model),
+    they take priority over ``camera_model`` and ``camera_assignment``: each image's
+    camera is taken directly from the prior model.
+    When ``prior_images`` is non-empty, ``input_images_path`` is ignored and the images
+    listed in ``prior_images`` are written directly, keeping their image IDs and camera
+    IDs identical to the prior model.
+    Otherwise the original logic applies, with three camera assignment modes via the
+    ``camera_assignment`` parameter:
+
     - ``"global"`` (1): All images share one camera model and intrinsics.
     - ``"per_subfolder"`` (2): Each subfolder under ``images_dir`` gets its own camera.
-    - ``"per_image"`` (3): Each image gets its own camera (intrinsics read per image).
-
-    When ``subfolder_camera_configs`` is provided, matching subfolders use their own
-    calibrated config instead of the global ``camera_model`` / ``camera_params``.
-    Subfolders without a matching entry fall back to the global settings.
-
-    When ``camera_assignment="per_image"``, per-image calibration data can be passed
-    via ``image_camera_configs`` (keyed by image basename).
+    - ``"per_image"`` (3): Each image gets its own camera.
 
     Args:
         database_path: Path to create/initialize COLMAP database
         images_dir: Path to images directory
         input_images_path: List of image file paths
         camera_model: Camera model (e.g., "OPENCV", "PINHOLE") — global fallback
-        prior_fx: Prior focal length in x direction (defaults to max(width, height))
-        prior_fy: Prior focal length in y direction (defaults to max(width, height))
-        camera_params: Optional pre-computed camera parameter list. If provided,
-            must match the expected parameter count for the given camera_model.
-            If None, default zero-distortion params are computed automatically.
-        subfolder_camera_configs: Optional dict mapping subfolder basename →
-            {"camera_model": str, "params": list[float]}. When present, matching
-            subfolders use their own config instead of the global camera_model/params.
         camera_assignment: Camera assignment mode. One of:
             ``"global"`` — one camera for all images;
             ``"per_subfolder"`` (default) — one camera per subfolder;
             ``"per_image"`` — one camera per image.
-        image_camera_configs: Optional dict for per-image calibration when
-            ``camera_assignment="per_image"``. Maps image basename (e.g. "img001.jpg") →
-            {"camera_model": str, "params": list[float]}. Images without an entry
-            fall back to the global camera_model / camera_params.
+        prior_cameras: Optional dict of COLMAP Camera objects (id -> Camera).
+            If provided, these cameras are registered directly and take priority
+            over ``camera_model`` / ``camera_assignment``.
+        prior_images: Optional list of tuples ``(image_id, image_path, camera_id)``.
+            When provided, images are written directly from this list (ignoring
+            ``input_images_path``), keeping the DB image_id and camera_id identical
+            to the prior model.
         logger: Optional logger instance
 
     Returns:
@@ -664,7 +656,7 @@ def initialize_colmap_database(
         db = COLMAPDatabase.connect(database_path)
         db.create_tables()
 
-        if not input_images_path:
+        if not input_images_path and not prior_images:
             logger.error(f"No images found in {images_dir}")
             db.close()
             return False
@@ -675,55 +667,53 @@ def initialize_colmap_database(
         camera_model_id = _CAMERA_MODEL_NAME_TO_ID.get(camera_model.upper(), 4)
         logger.info(f"Global camera model: {camera_model}, id: {camera_model_id}")
 
-        # --- Validate global camera_params if provided ---
-        if camera_params is not None:
-            if not _validate_camera_params(
-                camera_model, camera_model_id, camera_params, _EXPECTED_PARAM_COUNTS, logger
-            ):
+        image_count = 0
+
+        # =====================================================================
+        # MODE: prior — use cameras and per-image camera IDs from a prior model
+        # =====================================================================
+        if prior_cameras is not None:
+            # Register prior cameras in the database, preserving their original IDs
+            for cam_id, cam in prior_cameras.items():
+                cam_model_id = _CAMERA_MODEL_NAME_TO_ID.get(cam.model.upper(), 4)
+                db.add_camera(
+                    model=cam_model_id, width=cam.width, height=cam.height,
+                    params=np.asarray(cam.params, dtype=np.float64),
+                    prior_focal_length=True,
+                    camera_id=cam_id
+                )
+                logger.info(f"Added prior camera: model={cam.model}, id={cam_id}")
+            db.commit()
+
+            # 当 prior_images 非空时，忽略 input_images_path，
+            # 直接将 prior_images 中的图像写入数据库。
+            # 每个元素为 (image_id, image_path, camera_id)，
+            # 保持数据库中的 image_id / camera_id 与先验模型一致。
+            # 若 prior_images 为空，直接报错退出。
+            if not prior_images:
+                logger.error(
+                    "prior_cameras is provided but prior_images is empty. "
+                    "Cannot initialize database without prior image mappings."
+                )
                 db.close()
                 return False
-            logger.info(f"Using user-provided camera_params ({len(camera_params)} params)")
 
-        def resolve_camera_config(subfolder_basename=None, image_basename=None):
-            """Resolve (model_id, model_name, params, prior_focal_length) for a given context."""
-            c_model_id = camera_model_id
-            c_model_name = camera_model
-
-            # Priority 1: per-image config
-            if image_basename is not None and image_camera_configs and image_basename in image_camera_configs:
-                cfg = image_camera_configs[image_basename]
-                c_model = cfg["camera_model"].upper()
-                c_params = cfg["params"]
-                c_mid = _CAMERA_MODEL_NAME_TO_ID.get(c_model, 4)
-                if not _validate_camera_params(c_model, c_mid, c_params, _EXPECTED_PARAM_COUNTS, logger):
-                    return None
-                logger.info(f"  Using per-image config for '{image_basename}': model={c_model}, {len(c_params)} params")
-                return c_mid, c_model, list(c_params), True
-
-            # Priority 2: per-subfolder config
-            if subfolder_basename is not None and subfolder_camera_configs and subfolder_basename in subfolder_camera_configs:
-                cfg = subfolder_camera_configs[subfolder_basename]
-                c_model = cfg["camera_model"].upper()
-                c_params = cfg["params"]
-                c_mid = _CAMERA_MODEL_NAME_TO_ID.get(c_model, 4)
-                if not _validate_camera_params(c_model, c_mid, c_params, _EXPECTED_PARAM_COUNTS, logger):
-                    return None
-                logger.info(f"  Using per-subfolder config for '{subfolder_basename}': model={c_model}, {len(c_params)} params")
-                return c_mid, c_model, list(c_params), True
-
-            # Priority 3: global camera_params
-            if camera_params is not None:
-                return c_model_id, c_model_name, list(camera_params), True
-
-            # Priority 4: no params — caller must compute defaults
-            return None
-
-        image_count = 0
+            for (img_id, img_name, cam_id) in prior_images:
+                img_name = img_name.replace('\\', '/')
+                if cam_id not in prior_cameras:
+                    logger.warning(f"Image {img_name}: prior camera id {cam_id} not in prior cameras, skipping")
+                    continue
+                try:
+                    db.add_image(name=img_name, camera_id=cam_id, image_id=img_id)
+                    image_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to add image {img_name}: {e}")
+            db.commit()
 
         # =====================================================================
         # MODE: global — one camera for ALL images
         # =====================================================================
-        if camera_assignment == "global":
+        elif camera_assignment == "global":
             # Determine image dimensions from the first image
             first_image = input_images_path[0]
             dims = _get_image_dimensions(first_image, logger)
@@ -733,15 +723,11 @@ def initialize_colmap_database(
             width, height = dims
             logger.info(f"Global mode — reference image dimensions: {width}x{height} (from {first_image})")
 
-            resolved = resolve_camera_config(subfolder_basename=None)
-            if resolved is not None:
-                cur_model_id, cur_model_name, params, cur_prior = resolved
-            else:
-                cur_prior = False
-                params, cur_model_id, cur_model_name = _compute_default_params(
-                    camera_model_id, camera_model, width, height,
-                    prior_fx, prior_fy, _EXPECTED_PARAM_COUNTS, logger
-                )
+            cur_prior = False
+            params, cur_model_id, cur_model_name = _compute_default_params(
+                camera_model_id, camera_model, width, height,
+                None, None, _EXPECTED_PARAM_COUNTS, logger
+            )
 
             camera_id = db.add_camera(
                 model=cur_model_id, width=width, height=height,
@@ -755,8 +741,6 @@ def initialize_colmap_database(
                 try:
                     db.add_image(name=img_rel_path, camera_id=camera_id)
                     image_count += 1
-                    if (image_idx + 1) % 100 == 0:
-                        logger.info(f"  Added {image_idx + 1}/{len(input_images_path)} images")
                 except Exception as e:
                     logger.warning(f"Failed to add image {image_file}: {e}")
             db.commit()
@@ -786,16 +770,11 @@ def initialize_colmap_database(
                 width, height = dims
                 logger.info(f"Image dimensions: {width}x{height}")
 
-                subfolder_basename = os.path.basename(sub_folder)
-                resolved = resolve_camera_config(subfolder_basename=subfolder_basename)
-                if resolved is not None:
-                    cur_model_id, cur_model_name, params, cur_prior = resolved
-                else:
-                    cur_prior = False
-                    params, cur_model_id, cur_model_name = _compute_default_params(
-                        camera_model_id, camera_model, width, height,
-                        prior_fx, prior_fy, _EXPECTED_PARAM_COUNTS, logger
-                    )
+                cur_prior = False
+                params, cur_model_id, cur_model_name = _compute_default_params(
+                    camera_model_id, camera_model, width, height,
+                    None, None, _EXPECTED_PARAM_COUNTS, logger
+                )
 
                 camera_id = db.add_camera(
                     model=cur_model_id, width=width, height=height,
@@ -827,15 +806,11 @@ def initialize_colmap_database(
                 width, height = dims
                 image_basename = os.path.basename(image_file)
 
-                resolved = resolve_camera_config(image_basename=image_basename)
-                if resolved is not None:
-                    cur_model_id, cur_model_name, params, cur_prior = resolved
-                else:
-                    cur_prior = False
-                    params, cur_model_id, cur_model_name = _compute_default_params(
-                        camera_model_id, camera_model, width, height,
-                        prior_fx, prior_fy, _EXPECTED_PARAM_COUNTS, logger
-                    )
+                cur_prior = False
+                params, cur_model_id, cur_model_name = _compute_default_params(
+                    camera_model_id, camera_model, width, height,
+                    None, None, _EXPECTED_PARAM_COUNTS, logger
+                )
 
                 camera_id = db.add_camera(
                     model=cur_model_id, width=width, height=height,
@@ -859,6 +834,267 @@ def initialize_colmap_database(
 
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
+        return False
+
+
+def _parse_prior_camera_file(
+    prior_camera_file: str,
+    logger: logging.Logger,
+    valid_models: set = None,
+):
+    """
+    解析先验相机文件，返回相机配置列表（每个含 camera_id/model/width/height/params，
+    若文件带 FOLD 列则还含 fold 字段）。
+
+    支持两种格式（'#' 开头为注释）：
+      1) 带 FOLD 列:  CAMERA_ID FOLD MODEL WIDTH HEIGHT PARAMS[]
+         例: 1 B SIMPLE_RADIAL 6000 4000 9395.63 ... -0.08156
+      2) 无 FOLD 列:  CAMERA_ID MODEL WIDTH HEIGHT PARAMS[]
+         例: 1 SIMPLE_RADIAL 6000 4000 9395.63 ... -0.08156
+    当 parts[1] 是已知相机模型名时按格式 2 解析，否则按格式 1。
+
+    Args:
+        prior_camera_file: 先验相机文件路径
+        logger: logger 实例
+        valid_models: 合法相机模型名集合，用于自动判断是否带 FOLD 列
+
+    Returns:
+        相机配置列表，顺序与文件一致。
+    """
+    configs = []
+    if not os.path.isfile(prior_camera_file):
+        logger.error(f"Prior camera file not found: {prior_camera_file}")
+        return configs
+
+    with open(prior_camera_file, "r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 5:
+                logger.warning(
+                    f"Prior camera file line {line_no} has too few fields, skipped: {line}"
+                )
+                continue
+            try:
+                camera_id = int(parts[0])
+                # 第二列是合法相机模型名 => 无 FOLD 列；否则视为带 FOLD 列
+                has_fold = not (valid_models and parts[1].upper() in valid_models)
+                if has_fold:
+                    fold, model = parts[1], parts[2]
+                    width, height = int(parts[3]), int(parts[4])
+                    params = [float(p) for p in parts[5:]]
+                else:
+                    fold, model = None, parts[1]
+                    width, height = int(parts[2]), int(parts[3])
+                    params = [float(p) for p in parts[4:]]
+            except (ValueError, IndexError) as e:
+                logger.warning(
+                    f"Prior camera file line {line_no} could not be parsed: {line} ({e})"
+                )
+                continue
+            config = {
+                "camera_id": camera_id,
+                "model": model,
+                "width": width,
+                "height": height,
+                "params": params,
+            }
+            if has_fold:
+                config["fold"] = fold
+            configs.append(config)
+    logger.info(f"Parsed {len(configs)} camera config(s) from {prior_camera_file}")
+    return configs
+
+
+def initialize_colmap_database_from_prior_camera_file(
+    database_path: str,
+    images_dir: str,
+    prior_camera_file: str,
+    logger: logging.Logger = None
+) -> bool:
+    """
+    根据先验相机文件初始化 COLMAP 数据库，并添加各子文件夹下的图像。
+
+    先验相机文件中的每一行相机与 ``images_dir`` 下的一个子文件夹（FOLD）对应；
+    该子文件夹内的所有图像会以相对路径写入数据库，并关联到文件中指定的相机
+    （相机 ID 与内参均取自文件，且标记为先验焦距 prior_focal_length=True）。
+
+    先验相机文件支持两种格式（一行一个相机，'#' 开头为注释）：
+      1) 带 FOLD 列:  CAMERA_ID FOLD MODEL WIDTH HEIGHT PARAMS[]
+         例: 1 B SIMPLE_RADIAL 6000 4000 9395.63 ... -0.08156
+      2) 无 FOLD 列:  CAMERA_ID MODEL WIDTH HEIGHT PARAMS[]
+         例: 1 SIMPLE_RADIAL 6000 4000 9395.63 ... -0.08156
+    带 FOLD 列的相机按 FOLD 名匹配子文件夹；无 FOLD 列的相机按文件顺序
+    依次分配给 images_dir 下排序后的子文件夹。
+
+    Args:
+        database_path: 要创建/初始化的 COLMAP 数据库路径
+        images_dir: 图像根目录（其子文件夹与 FOLD 对应）
+        prior_camera_file: 先验相机文件路径
+        logger: 可选 logger 实例
+
+    Returns:
+        成功返回 True，失败返回 False
+    """
+    _CAMERA_MODEL_NAME_TO_ID = {
+        "SIMPLE_PINHOLE": 0,
+        "PINHOLE": 1,
+        "SIMPLE_RADIAL": 2,
+        "RADIAL": 3,
+        "OPENCV": 4,
+        "OPENCV_FISHEYE": 5,
+        "FULL_OPENCV": 6,
+        "FOV": 7,
+        "SIMPLE_RADIAL_FISHEYE": 8,
+        "RADIAL_FISHEYE": 9,
+        "THIN_PRISM_FISHEYE": 10,
+        "RAD_TAN_THIN_PRISM_FISHEYE": 11,
+    }
+    _EXPECTED_PARAM_COUNTS = {
+        0: 3,   # SIMPLE_PINHOLE: f, cx, cy
+        1: 4,   # PINHOLE: fx, fy, cx, cy
+        2: 4,   # SIMPLE_RADIAL: f, cx, cy, k
+        3: 5,   # RADIAL: f, cx, cy, k1, k2
+        4: 8,   # OPENCV: fx, fy, cx, cy, k1, k2, p1, p2
+        5: 8,   # OPENCV_FISHEYE: fx, fy, cx, cy, k1, k2, k3, k4
+        6: 12,  # FULL_OPENCV
+        7: 5,   # FOV: fx, fy, cx, cy, omega
+        8: 4,   # SIMPLE_RADIAL_FISHEYE: f, cx, cy, k1
+        9: 5,   # RADIAL_FISHEYE: f, cx, cy, k1, k2
+        10: 12, # THIN_PRISM_FISHEYE
+        11: 16, # RAD_TAN_THIN_PRISM_FISHEYE
+    }
+
+    if logger is None:
+        logger = logging.getLogger()
+
+    # 1. 解析先验相机文件（支持带/不带 FOLD 列两种格式）
+    camera_config_list = _parse_prior_camera_file(
+        prior_camera_file, logger, valid_models=set(_CAMERA_MODEL_NAME_TO_ID)
+    )
+    if not camera_config_list:
+        logger.error("No camera configurations parsed from prior camera file.")
+        return False
+
+    # 2. 删除已有数据库，确保使用干净的 schema
+    if os.path.exists(database_path):
+        logger.info(f"Removing existing database: {database_path}")
+        try:
+            os.remove(database_path)
+        except OSError as exc:
+            logger.error(f"Failed to remove existing database: {exc}")
+            return False
+
+    try:
+        db = COLMAPDatabase.connect(database_path)
+        db.create_tables()
+
+        # 3. 确定 images_dir 下的子文件夹（排序保证确定性），
+        #    并把每个相机映射到对应子文件夹：
+        #    - 带 FOLD 列的相机：按 FOLD 名匹配子文件夹
+        #    - 无 FOLD 列的相机：按文件顺序依次分配给排序后尚未占用的子文件夹
+        sub_folders = sorted(get_subfolders(images_dir))
+        if len(sub_folders) == 0:
+            logger.warning("No subfolders found under images_dir; nothing to add.")
+            db.close()
+            return False
+        subfolder_names = [os.path.basename(sf) for sf in sub_folders]
+
+        camera_configs = {}
+        used = set()
+        for config in camera_config_list:
+            fold = config.get("fold")
+            if fold is not None:
+                if fold not in subfolder_names:
+                    logger.warning(
+                        f"Camera id={config['camera_id']} fold '{fold}' has no matching "
+                        f"subfolder under images_dir, skipping."
+                    )
+                    continue
+                if fold in used:
+                    logger.warning(
+                        f"Fold '{fold}' is used by multiple cameras, "
+                        f"skipping camera id={config['camera_id']}."
+                    )
+                    continue
+                camera_configs[fold] = config
+                used.add(fold)
+
+        no_fold_configs = [c for c in camera_config_list if c.get("fold") is None]
+        available = [n for n in subfolder_names if n not in used]
+        for config, fold in zip(no_fold_configs, available):
+            camera_configs[fold] = config
+            used.add(fold)
+        if len(no_fold_configs) > len(available):
+            logger.warning(
+                f"{len(no_fold_configs)} cameras have no FOLD but only {len(available)} "
+                f"subfolders are available; extra cameras are skipped."
+            )
+
+        image_count = 0
+        for sub_folder in sub_folders:
+            fold_name = os.path.basename(sub_folder)
+            if fold_name not in camera_configs:
+                logger.warning(
+                    f"Subfolder '{fold_name}' has no matching camera in the prior file, skipping."
+                )
+                continue
+
+            config = camera_configs[fold_name]
+            model_id = _CAMERA_MODEL_NAME_TO_ID.get(config["model"].upper())
+            if model_id is None:
+                logger.warning(
+                    f"Unsupported camera model '{config['model']}' for fold '{fold_name}', skipping."
+                )
+                continue
+            if not _validate_camera_params(
+                config["model"], model_id, config["params"],
+                _EXPECTED_PARAM_COUNTS, logger
+            ):
+                logger.warning(f"Camera params mismatch for fold '{fold_name}', skipping.")
+                continue
+
+            images_num, all_files_num, images_path = count_images_in_dir(sub_folder)
+            logger.info(f"Subfolder '{fold_name}': {images_num} images.")
+            if images_num == 0:
+                logger.warning(f"No images in subfolder '{fold_name}', skipping.")
+                continue
+
+            # 添加相机（使用文件中的相机 ID）
+            db.add_camera(
+                model=model_id,
+                width=config["width"],
+                height=config["height"],
+                params=np.asarray(config["params"], dtype=np.float64),
+                prior_focal_length=True,
+                camera_id=config["camera_id"],
+            )
+            logger.info(
+                f"Added camera id={config['camera_id']} model={config['model']} "
+                f"{config['width']}x{config['height']} for fold '{fold_name}'"
+            )
+            db.commit()
+
+            # 添加该子文件夹下的图像，并关联到对应相机
+            for image_idx, image_file in enumerate(images_path):
+                img_rel_path = pathlib.Path(os.path.relpath(image_file, images_dir)).as_posix()
+                try:
+                    db.add_image(name=img_rel_path, camera_id=config["camera_id"])
+                    image_count += 1
+                    if (image_idx + 1) % 100 == 0:
+                        logger.info(f"  Added {image_idx + 1} images in '{fold_name}'")
+                except Exception as e:
+                    logger.warning(f"Failed to add image {image_file}: {e}")
+            db.commit()
+
+        db.close()
+        logger.info(f"Successfully initialized database with {image_count} images")
+        return image_count > 0
+
+    except Exception as e:
+        logger.error(f"Failed to initialize database from prior camera file: {e}")
         return False
 
 

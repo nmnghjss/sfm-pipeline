@@ -47,7 +47,7 @@ def compute_voxel_visibility_colmap(voxels, pose, camera):
         fy = camera.params[0]
         cx = camera.params[1]
         cy = camera.params[2]
-    elif camera.model == "PINHOLE" or camera.model == "RADIAL" or camera.model == "OPENCV":
+    elif camera.model == "PINHOLE" or camera.model == "RADIAL" or camera.model == "OPENCV" or camera.model == "OPENCV_FISHEYE":
         fx = camera.params[0]
         fy = camera.params[1]
         cx = camera.params[2]
@@ -344,15 +344,61 @@ def load_image_pairs(pairs_txt, unique=True):
     print(f"[INFO] Loaded {len(pairs)} image pairs")
     return pairs
 
-def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=0.1, max_angle=70, min_overlap=0.1):
+def compute_adaptive_voxel_size(poses, min_size=0.05, max_size=1.0):
+    """
+    自适应计算 voxel size。
+
+    基本逻辑：对每个相机，计算其相机中心到最近邻相机中心的距离，
+    然后对所有相机的最近邻距离取均值，作为 voxel size。
+    返回的 voxel size 会被限制在 [min_size, max_size] 范围内。
+
+    参数：
+        poses: dict[int, Image]    COLMAP 格式的相机位姿（含 qvec / tvec）
+        min_size: float            voxel size 下限
+        max_size: float            voxel size 上限
+
+    返回：
+        voxel_size: float          自适应的 voxel size
+    """
+    centers = np.array([
+        get_camera_center_and_dir(pose)[0] for _, pose in poses.items()
+    ])
+
+    n = len(centers)
+    if n < 2:
+        return min_size
+
+    nearest_dists = []
+    for i in range(n):
+        dists = np.linalg.norm(centers - centers[i], axis=1)
+        dists = np.delete(dists, i)  # 排除自身
+        nearest_dists.append(dists.min())
+
+    voxel_size = float(np.mean(nearest_dists))
+
+    return float(np.clip(voxel_size, min_size, max_size))
+
+
+def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=None, max_angle=70, min_overlap=0.1):
 
     # 读取 COLMAP 数据
     cameras, poses, points3D = read_model(pose_prior_path)
-    prior_focal_length = cameras[1].params[0]
-    prior_focal_factor = prior_focal_length / max(cameras[1].width, cameras[1].height)
+
+    # 未显式指定 voxel size 时，基于相机间距自适应计算
+    if voxel_size is None:
+        voxel_size = compute_adaptive_voxel_size(poses)
+        print(f"[INFO] Adaptive voxel size computed: {voxel_size:.4f}")
 
     # 构建体素
     points3D_xyz = np.array([point.xyz for point in points3D.values()])
+
+    # 构建体素前，将点云随机下采样至 10w 个点，避免点数过多导致体素计算开销过大
+    max_points = 10
+    if len(points3D_xyz) > max_points:
+        rng = np.random.default_rng(42)
+        sample_idx = rng.choice(len(points3D_xyz), max_points, replace=False)
+        points3D_xyz = points3D_xyz[sample_idx]
+
     _, voxels = build_voxel_grid(points3D_xyz, voxel_size)
 
     vis_cache = precompute_visibility(poses, cameras, voxels)
@@ -369,21 +415,21 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
 
     # 构建匹配图
     pairs = []
-    images_list = []
-    
+    images = []  # 每个元素为 (image_id, image_path, camera_id)
+
     # Create directory if it doesn't exist
     os.makedirs(os.path.dirname(output_txt), exist_ok=True)
     with open(output_txt, "w") as f:
         # 只遍历上三角，使用预计算的 overlap
         for idx_i in range(len(pose_items)):
             img_id_i, pose_i = pose_items[idx_i]
-            images_list.append(pose_i.name)
-            
+            images.append((img_id_i, pose_i.name, pose_i.camera_id))
+
             for idx_j in range(idx_i + 1, len(pose_items)):
                 img_id_j, pose_j = pose_items[idx_j]
                 # 从缓存中取 overlap 值
                 overlap_value = overlap_cache.get((pose_i.name, pose_j.name), 0.0)
-                
+
                 if is_matchable_advanced(
                     pose_i, pose_j, 
                     max_angle=np.radians(max_angle), 
@@ -395,4 +441,4 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
                     f.write(f"{pose_i.name} {pose_j.name}\n")
     print(f"[INFO] Matched image pairs computed and saved to {output_txt}, total pairs: {len(pairs)}")
 
-    return prior_focal_length, prior_focal_factor, images_list
+    return cameras, images

@@ -9,7 +9,10 @@ lists for use in SfM pipelines.
 import json
 import logging
 import os
+import numpy as np
 from typing import Any, Dict, List, Optional
+
+from read_write_model import Camera
 
 
 def load_calibration(
@@ -272,3 +275,91 @@ def map_subfolders_to_camera_configs(
             )
 
     return result
+
+
+def build_prior_cameras_from_calibration(
+    calib_path: str,
+    images_dir: str,
+    images_full_path: list,
+    logger: Optional[logging.Logger] = None,
+):
+    """
+    从 calibration.json 读取左右相机内参先验，构建为与 prior_cameras 相同的数据结构。
+
+    约定：
+    - "left"  → camera 1
+    - "right" → camera 2
+
+    每张图像按其相对路径的子目录名（left/right）匹配对应的相机 ID。
+
+    Args:
+        calib_path: calibration.json 文件的路径。
+        images_dir: 图像目录（用于计算图像相对路径）。
+        images_full_path: 所有图像文件的完整路径列表。
+        logger: 可选 logger 实例。
+
+    Returns:
+        (prior_cameras, prior_images) 二元组：
+        - prior_cameras: dict {camera_id: Camera}，与 read_write_model.Camera 结构一致；
+        - prior_images: list[tuple]，每个元素为 (image_id, image_path, camera_id)，
+          其中 image_id 从 1 开始递增。
+        当 calibration.json 不存在、无相机条目或无法构建任何相机时返回 None。
+    """
+    if logger is None:
+        logger = logging.getLogger()
+
+    if not os.path.isfile(calib_path):
+        return None
+
+    calib_all = load_calibration(calib_path, logger=logger)
+    if not calib_all:
+        logger.warning("Calibration file loaded but contains no camera entries")
+        return None
+
+    # 构建 Camera 对象: left → 1, right → 2
+    prior_cameras: Dict[int, Camera] = {}
+    cam_name_to_id: Dict[str, int] = {}
+    for cam_id, cam_name in ((1, "left"), (2, "right")):
+        cfg = None
+        for key in (cam_name, cam_name.lower(), cam_name.upper()):
+            if key in calib_all:
+                cfg = calib_all[key]
+                break
+        if cfg is None:
+            logger.warning(f"Calibration file has no '{cam_name}' camera entry")
+            continue
+        prior_cameras[cam_id] = Camera(
+            id=cam_id,
+            model=cfg["camera_model"],
+            width=cfg["width"],
+            height=cfg["height"],
+            params=np.array(cfg["params"], dtype=np.float64),
+        )
+        cam_name_to_id[cam_name.lower()] = cam_id
+        logger.info(
+            f"Built prior camera '{cam_name}' -> camera {cam_id}: "
+            f"model={cfg['camera_model']}, {cfg['width']}x{cfg['height']}, "
+            f"{len(cfg['params'])} params"
+        )
+
+    if not prior_cameras:
+        return None
+
+    # 为每张图像分配相机（按子目录名匹配 left/right）
+    # 返回 (image_id, image_path, camera_id) 元组列表，image_id 从 1 开始递增
+    prior_images: List[tuple] = []
+    for img_idx, img_path in enumerate(images_full_path):
+        rel_path = os.path.relpath(img_path, images_dir).replace('\\', '/')
+        subfolder = rel_path.split('/')[0].lower()
+        cam_id = cam_name_to_id.get(subfolder)
+        if cam_id is not None:
+            prior_images.append((img_idx + 1, rel_path, cam_id))
+        else:
+            logger.warning(f"Image {rel_path} has no matching camera in calibration")
+
+    logger.info(
+        f"Built prior cameras from calibration: {len(prior_cameras)} cameras, "
+        f"{len(prior_images)} images mapped"
+    )
+
+    return prior_cameras, prior_images

@@ -318,6 +318,7 @@ def align_and_compute_error(base_images_pose:dict, update_images_pose:dict, visu
         if '.' in name:
             name = '.'.join(name.split('.')[:-1])
         base_images_name_pose[name] = image
+        print(f"Base image: {name}, ID: {image_id}, qvec: {image.qvec}, tvec: {image.tvec}")
 
     for image_id, image in update_images_pose.items():
         # 去除文件名后缀
@@ -325,6 +326,7 @@ def align_and_compute_error(base_images_pose:dict, update_images_pose:dict, visu
         if '.' in name:
             name = '.'.join(name.split('.')[:-1])
         update_images_name_pose[name] = image
+        print(f"Update image: {name}, ID: {image_id}, qvec: {image.qvec}, tvec: {image.tvec}")
 
     base_images_pose = base_images_name_pose
     update_images_pose = update_images_name_pose

@@ -1,9 +1,17 @@
 import os
+import sys
+from pathlib import Path
 from PIL import Image
 import piexif
 import cv2
 import numpy as np
+
+# 当前文件所在目录的父目录
+parent_dir = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(parent_dir))
+
 from utils import count_images_in_dir
+
 # ========= 在这里改你的图片文件夹路径 =========
 img_dir = r"E:\\images2400\\input"
 output_dir = r"E:\\images2400\\resized1600-exif\\input"

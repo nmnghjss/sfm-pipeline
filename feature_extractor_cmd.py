@@ -21,7 +21,9 @@ def get_feature_extractor_cmd(colmap_command: str,
                           use_gpu: int = 1,
                           max_image_size: int = 4096,
                           max_feature_num: int = 8192,
-                          max_feature_num_final: int = 1024,
+                          anms_selected_num: int = 1024,
+                          cell_num: int = 600,
+                          per_cell_num: int = 3,
                           sift_first_octave: int = -1, # -1
                           sift_num_octaves: int = 4, # 4
                           sift_octave_resolution: int = 3, # 3
@@ -49,7 +51,9 @@ def get_feature_extractor_cmd(colmap_command: str,
         "--FeatureExtraction.gpu_index","-1",
         "--FeatureExtraction.max_image_size", str(max_image_size),
         "--SiftExtraction.max_num_features", str(max_feature_num),
-        "--SiftExtraction.max_num_features_final", str(max_feature_num_final),
+        "--SiftExtraction.anms_selected_num", str(anms_selected_num),
+        "--SiftExtraction.cell_num", str(cell_num),
+        "--SiftExtraction.per_cell", str(per_cell_num),
         "--SiftExtraction.first_octave", str(sift_first_octave), # -1
         "--SiftExtraction.num_octaves", str(sift_num_octaves), # 4
         "--SiftExtraction.octave_resolution", str(sift_octave_resolution), # 3
@@ -63,7 +67,6 @@ def get_feature_extractor_cmd(colmap_command: str,
         # "--SiftExtraction.dsp_max_scale", "3",
         # "--SiftExtraction.dsp_num_scales", "10",
         "--AlikedExtraction.max_num_features", str(max_feature_num),
-        "--AlikedExtraction.max_num_features_final", str(max_feature_num_final),
         "--AlikedExtraction.min_score", "0.2", # 0.2
         "--AlikedExtraction.n16rot_model_path", aliked_n16rot_path,
         "--AlikedExtraction.n32_model_path", aliked_n32_path

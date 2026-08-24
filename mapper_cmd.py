@@ -239,6 +239,7 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.track_intra_image_consistency_threshold", "10",
         "--GlobalMapper.track_required_tracks_per_view", "2147483647",
         "--GlobalMapper.track_min_num_views_per_track", str(track_min_num_views_per_track),#3
+        # "--GlobalMapper.keep_max_num_tracks", "1000000",
         "--GlobalMapper.gp_use_gpu", str(use_gpu), # 1
         "--GlobalMapper.gp_gpu_index", "-1",
         "--GlobalMapper.gp_optimize_positions", str(gp_optimize_positions),
@@ -247,7 +248,7 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.gp_loss_function_scale", "0.1",
         "--GlobalMapper.gp_max_num_iterations", str(gp_max_num_iterations), # 100
         "--GlobalMapper.ba_num_iterations", str(ba_num_iterations),
-        "--GlobalMapper.refine_sensor_from_rig", "0",        
+        "--GlobalMapper.refine_sensor_from_rig", "1",        
         "--GlobalMapper.ba_refine_focal_length", str(refine_focal_length),
         "--GlobalMapper.ba_refine_principal_point", str(refine_principal_point),
         "--GlobalMapper.ba_refine_extra_params", str(refine_extra_params),
@@ -576,6 +577,7 @@ def get_pose_prior_global_mapper_cmd(colmap_command: str,
                    max_angular_reproj_error_deg: float = 1.0,
                    max_normalized_reproj_error: float = 0.01,
                    min_tri_angle_deg: float = 1.0,
+                   track_min_num_views_per_track: int = 3,
                    refine_focal_length: int = 1,
                    refine_principal_point: int = 1,
                    refine_extra_params: int = 1):
@@ -603,10 +605,12 @@ def get_pose_prior_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.skip_retriangulation", str(skip_retriangulation), # 0
         "--GlobalMapper.track_intra_image_consistency_threshold", "10",
         "--GlobalMapper.track_required_tracks_per_view", "2147483647",
-        "--GlobalMapper.track_min_num_views_per_track", "3",
+        "--GlobalMapper.track_min_num_views_per_track", str(track_min_num_views_per_track),#3
+        "--GlobalMapper.keep_max_num_tracks", "1000000",
         "--GlobalMapper.gp_use_gpu", str(use_gpu), # 1
         "--GlobalMapper.gp_gpu_index", "-1",
-        "--GlobalMapper.gp_optimize_positions", "1",
+        "--GlobalMapper.gp_generate_random_positions", "0",
+        "--GlobalMapper.gp_optimize_positions", "0",        
         "--GlobalMapper.gp_optimize_points", "1",
         "--GlobalMapper.gp_optimize_scales", "1",
         "--GlobalMapper.gp_loss_function_scale", "0.1",
@@ -721,3 +725,34 @@ def get_reconstruction_refine_cmd(colmap_command: str,
         "--GlobalMapper.min_tri_angle_deg", str(min_tri_angle_deg), #1
     ]
     return mapper_cmd
+
+
+def get_model_align_cmd(colmap_command: str,
+                    log_level: int,
+                    database_path: str,
+                    input_path: str,                    
+                    output_path: str,
+                    ref_model_path: str = "",
+                    ref_images_path: str = "",
+                    ref_is_gps: int = 1,
+                    alignment_type: str = "enu",
+                    alignment_max_error: float = 0.0):
+
+    model_align_cmd = [
+        colmap_command, "model_aligner",
+        "--default_random_seed", "0",
+        "--database_path", database_path,
+        "--input_path", input_path,
+        "--output_path", output_path,
+        "--ref_model_path", ref_model_path,
+        "--ref_is_gps", str(ref_is_gps),
+        "--ref_images_path", str(ref_images_path),
+        "--log_level", str(log_level),
+        "--alignment_type", str(alignment_type),
+        # "--transform_path", str(transform_path),
+        "--min_common_images", "3",
+        "--alignment_max_error", str(alignment_max_error),
+        "--merge_image_and_ref_origins", "0",
+    ]
+
+    return model_align_cmd

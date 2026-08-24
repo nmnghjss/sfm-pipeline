@@ -9,7 +9,7 @@ from match_utils import load_image_pairs
 
 
 
-def generate_sequential_match_list(
+def get_sequential_match_list(
     image_names: list,
     overlap: int = 30,
     output_file: str = None,
@@ -168,8 +168,8 @@ def get_exhaustive_matcher_cmd(colmap_command: str,
                              sift_lightglue_match_path: str,
                              bruteforce_match_path: str,
                              aliked_lightglue_match_path: str,
-                             max_distance: float=0.7,
-                             max_ratio: float=0.8,
+                             sift_match_max_distance: float=0.7,
+                             sift_match_max_ratio: float=0.8,
                              two_view_geometry_max_error: float=4.0):
 
     if feature_match_type.lower().startswith("sift"):
@@ -191,8 +191,8 @@ def get_exhaustive_matcher_cmd(colmap_command: str,
         "--FeatureMatching.rig_verification", "0",
         "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
         "--FeatureMatching.max_num_matches", str(max_feature_num),
-        "--SiftMatching.max_ratio", str(max_ratio), # 0.8
-        "--SiftMatching.max_distance", str(max_distance), # 0.7
+        "--SiftMatching.max_ratio", str(sift_match_max_ratio), # 0.8
+        "--SiftMatching.max_distance", str(sift_match_max_distance), # 0.7
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
@@ -235,8 +235,8 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
                              max_matches_per_image: int = 150,
                              min_num_inliers: int = 15,
                              min_inlier_ratio: float = 0.25,
-                             max_distance: float = 0.7,
-                             max_ratio: float = 0.5,                             
+                             sift_match_max_distance: float = 0.7,
+                             sift_match_max_ratio: float = 0.5,                             
                              two_view_geometry_max_error: float = 4.0
                              ):
 
@@ -257,8 +257,8 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
         "--FeatureMatching.rig_verification", "0",
         "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
         "--FeatureMatching.max_num_matches", str(max_feature_num),
-        "--SiftMatching.max_ratio", str(max_ratio),
-        "--SiftMatching.max_distance", str(max_distance),
+        "--SiftMatching.max_ratio", str(sift_match_max_ratio),
+        "--SiftMatching.max_distance", str(sift_match_max_distance),
         "--SiftMatching.cross_check", "1",
         "--SiftMatching.cpu_brute_force_matcher", "0",
         "--SiftMatching.lightglue_min_score", "0.1",
@@ -294,6 +294,75 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
     
     return vocab_tree_matcher_cmd
 
+
+def get_spatial_matcher_cmd(colmap_command: str,
+                                log_level: int, 
+                                database_path: str, 
+                                feature_match_type: str, 
+                                use_gpu: int,
+                                sift_lightglue_match_path: str,
+                                bruteforce_match_path: str,
+                                aliked_lightglue_match_path: str,                           
+                                max_feature_num: int = 2048,
+                                min_num_inliers: int = 15,
+                                min_inlier_ratio: float = 0.25,
+                                sift_match_max_distance: float = 0.7,
+                                sift_match_max_ratio: float = 0.5,                             
+                                two_view_geometry_max_error: float = 4.0,
+                                ignore_z: int = 1,
+                                max_num_neighbors: int = 300,
+                                min_num_neighbors: int = 50,
+                                farest_image_distance: float = 100
+                                ):
+    
+    if feature_match_type.lower().startswith("sift"):
+        guided_matching = "1"
+    else:
+        guided_matching = "0"
+    spatial_matcher_cmd = [
+        colmap_command, "spatial_matcher",
+        "--log_level", str(log_level),
+        "--database_path", database_path,        
+        "--FeatureMatching.use_gpu", str(use_gpu),
+        "--FeatureMatching.gpu_index", "-1",
+        "--FeatureMatching.type", feature_match_type,
+        "--FeatureMatching.num_threads", "-1",        
+        "--FeatureMatching.guided_matching", guided_matching,
+        "--FeatureMatching.skip_geometric_verification", "0",
+        "--FeatureMatching.rig_verification", "0",
+        "--FeatureMatching.skip_image_pairs_in_same_frame", "0",
+        "--FeatureMatching.max_num_matches", str(max_feature_num),
+        "--SiftMatching.max_ratio", str(sift_match_max_ratio),
+        "--SiftMatching.max_distance", str(sift_match_max_distance),
+        "--SiftMatching.cross_check", "1",
+        "--SiftMatching.cpu_brute_force_matcher", "0",
+        "--SiftMatching.lightglue_min_score", "0.1",
+        "--SiftMatching.lightglue_model_path", sift_lightglue_match_path,
+        "--AlikedMatching.brute_force_min_cossim", "0.85",
+        "--AlikedMatching.brute_force_max_ratio", "1",
+        "--AlikedMatching.brute_force_cross_check", "1",
+        "--AlikedMatching.bruteforce_model_path", bruteforce_match_path,
+        "--AlikedMatching.lightglue_min_score", "0.1",
+        "--AlikedMatching.lightglue_model_path", aliked_lightglue_match_path,
+        "--TwoViewGeometry.min_num_inliers", str(min_num_inliers), # 15
+        "--TwoViewGeometry.multiple_models", "0",
+        "--TwoViewGeometry.compute_relative_pose", "0",
+        "--TwoViewGeometry.detect_watermark", "1",
+        "--TwoViewGeometry.multiple_ignore_watermark", "1",
+        "--TwoViewGeometry.watermark_detection_max_error", "4",
+        "--TwoViewGeometry.filter_stationary_matches", "0",
+        "--TwoViewGeometry.stationary_matches_max_error", "4",
+        "--TwoViewGeometry.max_error", str(two_view_geometry_max_error),
+        "--TwoViewGeometry.confidence", "0.999",
+        "--TwoViewGeometry.max_num_trials", "10000",
+        "--TwoViewGeometry.min_inlier_ratio", str(min_inlier_ratio),
+        "--TwoViewGeometry.random_seed", "-1",
+        "--SpatialMatching.ignore_z", str(ignore_z),
+        "--SpatialMatching.max_num_neighbors", str(max_num_neighbors),
+        "--SpatialMatching.min_num_neighbors", str(min_num_neighbors),
+        "--SpatialMatching.max_distance", str(farest_image_distance)
+    ]
+    return spatial_matcher_cmd          
 
 def find_similar_images_parallel(image_features, max_num=30, min_num=20, threshold=None, logger=None):
     """
