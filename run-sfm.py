@@ -83,7 +83,7 @@ parser.add_argument("--sift_match_max_distance", "-smmd", default=0.7, type=floa
 parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.7, type=float, help="SIFT match max ratio for feature matching")
 parser.add_argument("--loma_extractor_min_score", type=float, default=0.0, help="Minimum score threshold for LOMA feature extraction")
 parser.add_argument("--loma_extractor_use_bf16", type=int, default=0, help="Whether to use BF16 for LOMA feature extraction")
-parser.add_argument("--loma_extractor_use_fast_resize", type=int, default=1, help="Whether to use fast resize for LOMA feature extraction")
+parser.add_argument("--loma_extractor_use_fast_resize", type=int, default=0, help="Whether to use fast resize for LOMA feature extraction")
 parser.add_argument("--loma_match_min_score", type=float, default=0.1, help="Minimum score threshold for LOMA feature matching")
 parser.add_argument("--loma_match_use_bf16", type=int, default=0, help="Whether to use BF16 for LOMA feature matching")
 parser.add_argument("--min_num_inliers", type=int, default=15, help="Minimum number of inliers for a valid match")
