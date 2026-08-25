@@ -1,6 +1,6 @@
 import os
 import numpy as np
-from convert_ar_to_colmap import quat_to_rot
+from pose_utils import quat_to_rot
 from read_write_model import read_model
 
 def build_voxel_grid(points, voxel_size):

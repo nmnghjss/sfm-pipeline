@@ -12,7 +12,7 @@ from typing import List
 
 
 # ---------------------------------------------------------------------------
-#  GPU memory monitoring – multi-fallback: pynvml → torch.cuda → nvidia-smi
+#  GPU memory monitoring – multi-fallback: pynvml → nvidia-smi
 # ---------------------------------------------------------------------------
 _GPU_MONITOR_AVAILABLE = False
 _GPU_MONITOR_METHOD = ""
@@ -26,21 +26,10 @@ try:
 except Exception:
     pass
 
-# Method 2: torch.cuda (reliable, already a project dependency)
-if not _GPU_MONITOR_AVAILABLE:
-    try:
-        import torch
-        if torch.cuda.is_available():
-            _GPU_MONITOR_AVAILABLE = True
-            _GPU_MONITOR_METHOD = "torch.cuda"
-    except Exception:
-        pass
-
-
 def _get_gpu_memory_usage() -> Dict[int, Tuple[int, int]]:
     """Return {gpu_index: (used_bytes, total_bytes)} for each NVIDIA GPU.
     Returns an empty dict if no GPU monitoring method is available or fails.
-    Tries: pynvml → torch.cuda → nvidia-smi subprocess.
+    Tries: pynvml → nvidia-smi subprocess.
     """
     result: Dict[int, Tuple[int, int]] = {}
 
@@ -58,19 +47,6 @@ def _get_gpu_memory_usage() -> Dict[int, Tuple[int, int]]:
             return result
         except Exception:
             # Fall through to nvidia-smi
-            pass
-
-    # ---- torch.cuda ----
-    if _GPU_MONITOR_METHOD == "torch.cuda":
-        try:
-            import torch
-            for i in range(torch.cuda.device_count()):
-                # torch.cuda.mem_get_info returns (free, total) in bytes
-                free_bytes, total_bytes = torch.cuda.mem_get_info(i)
-                used_bytes = total_bytes - free_bytes
-                result[i] = (used_bytes, total_bytes)
-            return result
-        except Exception:
             pass
 
     # ---- nvidia-smi (last resort) ----
@@ -231,7 +207,7 @@ def run_subprocess(
     monitor_memory : bool
         If True, track peak CPU RAM and GPU VRAM usage of the process tree
         and log a summary when the process exits.  Requires psutil (CPU).
-        GPU monitoring tries: pynvml → torch.cuda → nvidia-smi.
+        GPU monitoring tries: pynvml → nvidia-smi.
     peak_memory : dict, optional
         If provided, this dict is updated with the cumulative peak memory
         across multiple calls.  Keys: 'cpu_mb' (float), 'gpu_mb' (dict[int, float]).
@@ -276,7 +252,7 @@ def run_subprocess(
         else:
             logger.warning(
                 "Memory monitoring: no GPU method available (VRAM unavailable). "
-                "Install nvidia-ml-py (pip install nvidia-ml-py) or ensure torch.cuda works."
+                "Install nvidia-ml-py (pip install nvidia-ml-py) or ensure nvidia-smi is available."
             )
 
     # Real-time printing and logging

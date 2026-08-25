@@ -5,6 +5,9 @@ from argparse import ArgumentParser
 import shutil
 import time
 from datetime import datetime
+import cv2
+import numpy as np
+from PIL import Image
 from mapper_cmd import (
     get_ba_cmd,
     get_incremental_mapper_cmd,
@@ -34,14 +37,13 @@ from calibration_utils import build_prior_cameras_from_calibration
 
 from match_utils import compute_matched_image_pairs_by_pose_prior
 from database import initialize_colmap_database, initialize_colmap_database_from_prior_camera_file
-from feature_extractor_cmd import get_feature_extractor_cmd, extract_neural_features
+from feature_extractor_cmd import get_feature_extractor_cmd
 from match_cmd import (
     get_exhaustive_matcher_cmd,
     get_spatial_matcher_cmd,
     get_matches_importer_cmd,
     get_sequential_match_list,
-    get_vocab_tree_matcher_cmd,
-    match_features_with_lightglue,
+    get_vocab_tree_matcher_cmd
 )
 from read_write_model import read_images_binary, write_images_binary
 
@@ -53,7 +55,7 @@ parser.add_argument("--ba_global_backend", default="CERES", type=str, choices=["
 parser.add_argument("--source_path", "-s", default="E:\\debug", type=str)
 parser.add_argument("--pos_file", "-pf", default="", type=str, help="Path to gps or cartesian pose file (if available)")
 parser.add_argument("--output_path", "-o", default="output-debug", type=str)
-parser.add_argument("--camera", default="SIMPLE_RADIAL", type=str)
+parser.add_argument("--camera", default="OPENCV", type=str)
 parser.add_argument("--default_focal_length_factor", default=1.2, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
 parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--prior_camera_file", "-pcf", default="", type=str, help="Path to prior camera intrinsics file (one camera per line: CAMERA_ID, FOLD, MODEL, WIDTH, HEIGHT, PARAMS). When provided, the database is initialized from this file.")
@@ -65,10 +67,10 @@ parser.add_argument("--init_camera", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "SUPERPOINT"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="LOMA_B128", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="BRUTEFORCE", choices=["BRUTEFORCE", "LIGHTGLUE"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_alg", "-ma", type=str, default="LOMA_B128", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
 parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2000, type=int, help="Maximum number of features to extract per image")
@@ -79,6 +81,11 @@ parser.add_argument("--sift_peak_threshold", "-spt", default=0.02, type=float, h
 parser.add_argument("--sift_first_octave", "-sfo", default=0, type=int, help="SIFT first octave for feature extraction")
 parser.add_argument("--sift_match_max_distance", "-smmd", default=0.7, type=float, help="SIFT match max distance for feature matching")
 parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.7, type=float, help="SIFT match max ratio for feature matching")
+parser.add_argument("--loma_extractor_min_score", type=float, default=0.0, help="Minimum score threshold for LOMA feature extraction")
+parser.add_argument("--loma_extractor_use_bf16", type=int, default=0, help="Whether to use BF16 for LOMA feature extraction")
+parser.add_argument("--loma_extractor_use_fast_resize", type=int, default=1, help="Whether to use fast resize for LOMA feature extraction")
+parser.add_argument("--loma_match_min_score", type=float, default=0.1, help="Minimum score threshold for LOMA feature matching")
+parser.add_argument("--loma_match_use_bf16", type=int, default=0, help="Whether to use BF16 for LOMA feature matching")
 parser.add_argument("--min_num_inliers", type=int, default=15, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
@@ -100,8 +107,6 @@ parser.add_argument("--log_level", default="0", type=int, help="Set the logging 
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--visualize_keypoints", "-viskpts", action="store_true", help="Whether to visualize all keypoints on each image")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
-parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
-parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--farest_image_distance", "-fid", type=float, default=400.0, help="Maximum distance between images for spatial matching")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
@@ -114,9 +119,14 @@ parser.add_argument("--voxel_size", type=float, default=None, help="Voxel size f
 parser.add_argument("--max_angle", type=float, default=120, help="Maximum angle (in degrees) between camera views for prior pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for prior pose-based image pair generation")
 parser.add_argument("--refine_num", type=int, default=1, help="refine reconstruction iterations num")
-parser.add_argument("--undistort", action="store_true", help="Whether to undistort images after reconstruction")
+parser.add_argument("--undistort", type=int, default=0, help="Whether to undistort images after reconstruction")
 parser.add_argument("--unify_output_images", action="store_true")
 parser.add_argument("--monitor_memory", action="store_true", help="Monitor and report peak CPU RAM and GPU VRAM usage of COLMAP processes")
+parser.add_argument("--create_mask", action="store_true", help="Create binary image masks before feature extraction")
+parser.add_argument("--corner_width", type=float, default=0.0, help="Width ratio of each corner mask region, in [0, 1]")
+parser.add_argument("--corner_height", type=float, default=0.0, help="Height ratio of each corner mask region, in [0, 1]")
+parser.add_argument("--center_width", type=float, default=0.0, help="Width ratio of the center mask region, in [0, 1]")
+parser.add_argument("--center_height", type=float, default=0.0, help="Height ratio of the center mask region, in [0, 1]")
 args = parser.parse_args()
 
 
@@ -138,6 +148,96 @@ def resource_path() -> str:
     except AttributeError:
         base_path = os.path.dirname(os.path.abspath(__file__))
     return base_path
+
+
+def create_image_masks(
+    images_dir: str,
+    image_paths: list,
+    mask_dir: str,
+    corner_width: float,
+    corner_height: float,
+    center_width: float,
+    center_height: float,
+) -> str:
+    """Create binary masks while preserving the input image relative paths."""
+    mask_sizes = (corner_width, corner_height, center_width, center_height)
+    if any(value < 0 or value > 1 for value in mask_sizes):
+        raise ValueError("Mask dimension ratios must be between 0 and 1")
+
+    for image_path in image_paths:
+        try:
+            with Image.open(image_path) as image:
+                image_width, image_height = image.size
+        except (OSError, ValueError) as error:
+            raise ValueError(f"Failed to read image header for mask creation: {image_path}") from error
+
+        corner_w = int(round(corner_width * image_width))
+        corner_h = int(round(corner_height * image_height))
+        center_w = int(round(center_width * image_width))
+        center_h = int(round(center_height * image_height))
+
+        mask = np.full((image_height, image_width), 255, dtype=np.uint8)
+
+        # Mask the four corner rectangles.
+        mask[:corner_h, :corner_w] = 0
+        mask[:corner_h, image_width - corner_w:] = 0
+        mask[image_height - corner_h:, :corner_w] = 0
+        mask[image_height - corner_h:, image_width - corner_w:] = 0
+
+        # Mask the centered rectangle.
+        center_x0 = max((image_width - center_w) // 2, 0)
+        center_y0 = max((image_height - center_h) // 2, 0)
+        mask[center_y0:center_y0 + center_h, center_x0:center_x0 + center_w] = 0
+
+        relative_path = os.path.relpath(image_path, images_dir)
+        mask_path = os.path.join(mask_dir, relative_path + ".png")
+        os.makedirs(os.path.dirname(mask_path), exist_ok=True)
+        print(f"Creating mask for {image_path} -> {mask_path}")
+
+        # Store the lossless mask as <original filename>.png.
+        encoded_mask = cv2.imencode(".png", mask)[1]
+        encoded_mask.tofile(mask_path)
+
+    return mask_dir
+
+
+def create_mask_for_image(
+    image_path: str,
+    mask_path: str,
+    corner_width: float,
+    corner_height: float,
+    center_width: float,
+    center_height: float,
+) -> str:
+    """Create one binary mask with the same dimensions as an input image."""
+    try:
+        with Image.open(image_path) as image:
+            image_width, image_height = image.size
+    except (OSError, ValueError) as error:
+        raise ValueError(f"Failed to read image header for mask creation: {image_path}") from error
+
+    mask_sizes = (corner_width, corner_height, center_width, center_height)
+    if any(value < 0 or value > 1 for value in mask_sizes):
+        raise ValueError("Mask dimension ratios must be between 0 and 1")
+
+    corner_w = int(round(corner_width * image_width))
+    corner_h = int(round(corner_height * image_height))
+    center_w = int(round(center_width * image_width))
+    center_h = int(round(center_height * image_height))
+    mask = np.full((image_height, image_width), 255, dtype=np.uint8)
+    mask[:corner_h, :corner_w] = 0
+    mask[:corner_h, image_width - corner_w:] = 0
+    mask[image_height - corner_h:, :corner_w] = 0
+    mask[image_height - corner_h:, image_width - corner_w:] = 0
+
+    center_x0 = max((image_width - center_w) // 2, 0)
+    center_y0 = max((image_height - center_h) // 2, 0)
+    mask[center_y0:center_y0 + center_h, center_x0:center_x0 + center_w] = 0
+
+    os.makedirs(os.path.dirname(mask_path), exist_ok=True)
+    encoded_mask = cv2.imencode(".png", mask)[1]
+    encoded_mask.tofile(mask_path)
+    return mask_path
 
 # ============================ Logging setup ===============================
 log_level = args.log_level
@@ -163,7 +263,7 @@ fh.setFormatter(log_formatter)
 logger.addHandler(fh)
 
 # =========================== Record parameters to log file ==========================
-record_args(logger, args)
+# record_args(logger, args)
 
 # ============================ Timeing variables ===============================
 start_time = time.time()
@@ -184,11 +284,6 @@ min_num_inliers = args.min_num_inliers
 min_inlier_ratio = args.min_inlier_ratio
 
 feature_match_type = args.match_alg
-if feature_match_type != "UNDEFINED":
-    if args.feature_type == "SIFT":
-        feature_match_type = "SIFT" + "_" + feature_match_type
-    else:
-        feature_match_type = "ALIKED" + "_" + feature_match_type
 
 # ===================== Paths and executables ============================================
 os_type = check_operating_system()
@@ -199,7 +294,7 @@ if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
     colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.1.0\\bin\\colmap.exe"
-    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-caspar-double/colmap.exe")
+    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260819/colmap.exe")
     
 else:
     colmap_path = "colmap"
@@ -211,10 +306,30 @@ sift_lightglue_match_path = os.path.join(current_path, "checkpoints/colmap_dep/s
 aliked_lightglue_match_path = os.path.join(current_path, "checkpoints/colmap_dep/aliked-lightglue.onnx")
 aliked_n16rot_path = os.path.join(current_path, "checkpoints/colmap_dep/aliked-n16rot.onnx")
 aliked_n32_path = os.path.join(current_path, "checkpoints/colmap_dep/aliked-n32.onnx")
+loma_detector_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_detector.onnx")
+loma_descriptor_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_descriptor_dedode_g.onnx")
+loma_descriptor_model_path_bf16 = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_descriptor_dedode_g_bf16.onnx")
+loma_descriptor_b128_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_descriptor_dedode_b.onnx")
+loma_match_b_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_B.onnx")
+loma_match_b_model_path_bf16 = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_B_bf16.onnx")
+loma_match_b128_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_B128.onnx")
+loma_match_b128_model_path_bf16 = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_B128_bf16.onnx")
+loma_match_r_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_R.onnx")
+loma_match_r_model_path_bf16 = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_R_bf16.onnx")
+loma_match_l_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_L.onnx")
+loma_match_l_model_path_bf16 = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_L_bf16.onnx")
+loma_match_g_model_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_G.onnx")
+loma_match_g_model_path_bf16 = os.path.join(current_path, "checkpoints/colmap_dep/loma/loma_matcher_G_bf16.onnx")
+loma_match_brute_force_min_cossim = 0.85
+loma_match_brute_force_max_ratio = 1
+loma_match_brute_force_cross_check = 1
+loma_match_brute_force_model_path = bruteforce_match_path
+
 vocab_sift_path = os.path.join(current_path, "checkpoints/colmap_dep/vocab_tree_faiss_flickr100K_words256K.bin")
 vocab_aliked_n16rot_path = os.path.join(current_path, "checkpoints/colmap_dep/vocab_tree_faiss_flickr100K_words64K_aliked_n16rot.bin")
 vocab_aliked_n32_path = os.path.join(current_path, "checkpoints/colmap_dep/vocab_tree_faiss_flickr100K_words64K_aliked_n32.bin")
-
+vocab_loma_b_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/vocab_tree_loma_b_flickr100k.bin")
+vocab_loma_b128_path = os.path.join(current_path, "checkpoints/colmap_dep/loma/vocab_tree_loma_b128_flickr100k.bin")
 
 if args.feature_type == "SIFT":
     vocab_path = vocab_sift_path
@@ -222,6 +337,10 @@ elif args.feature_type == "ALIKED_N16ROT":
     vocab_path = vocab_aliked_n16rot_path
 elif args.feature_type == "ALIKED_N32":
     vocab_path = vocab_aliked_n32_path
+elif args.feature_type == "LOMA_B":
+    vocab_path = vocab_loma_b_path
+elif args.feature_type == "LOMA_B128":
+    vocab_path = vocab_loma_b128_path
 else:
     vocab_path = ""
 
@@ -333,9 +452,6 @@ else:
             prior_cameras, prior_images = calib_result
             args.init_camera = True
 
-    if args.external_feature or args.external_match:
-        args.init = True  # Ensure database is initialized if using external feature extraction or matching
-
     if args.init_camera or prior_cameras:
         camera_assignment = "global" 
         if args.single_camera == "1": 
@@ -361,63 +477,77 @@ else:
             sys.exit(1)
 
 
-# ========================= Feature extraction ==================================
-image_features = None
-if args.external_feature:
-    logger.info("Using external feature extraction...")
+# ========================= Image mask generation =============================
+camera_mask_path = ""
+image_mask_path = ""
+if args.create_mask:
+    input_subfolders = [
+        path for path in get_subfolders(images_dir)
+        if os.path.basename(path) != "mask"
+    ]
+    mask_params = (
+        args.corner_width,
+        args.corner_height,
+        args.center_width,
+        args.center_height,
+    )
 
-    initialize_colmap_database(
-        database_path=database_path,
-        images_dir=images_dir,
-        input_images_path=images_full_path,
-        camera_model=args.camera,
-        camera_assignment="per_subfolder" if args.single_fold == "1" else "per_image",
-        logger=logger
-    )
-    
-    # Now run SuperPoint feature extraction   
-    feature_start = time.time() 
-    image_features, image_id_map, feat_ext_time = extract_neural_features(
-        feature_type=args.feature_type,
-        local_weights_root=current_path,
-        database_path=database_path,
-        images_dir=images_dir,
-        images_path=images_full_path,
-        max_num_keypoints=args.max_feature_num,
-        logger=logger
-    )
-    feature_extraction_time = time.time() - feature_start
-    logger.info(f"external feature extraction time: {feature_extraction_time:.2f} s (including database writes)")
-    
-else:
-    feat_extraction_cmd = get_feature_extractor_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        images_path=images_dir,
-        feature_type=args.feature_type,
-        single_camera_per_image=int(args.single_image),
-        single_camera_per_fold=int(args.single_fold),
-        single_camera=int(args.single_camera),
-        camera_model=args.camera,
-        default_focal_length_factor=args.default_focal_length_factor,
-        camera_parameters=args.camera_params,
-        use_gpu=use_gpu,
-        max_image_size=args.max_image_size,
-        max_feature_num=args.max_feature_num,
-        anms_selected_num=args.anms_selected_num,
-        cell_num=args.cell_num,
-        per_cell_num=args.per_cell_num,
-        sift_peak_threshold=args.sift_peak_threshold,
-        sift_first_octave=args.sift_first_octave,
-        aliked_n16rot_path=aliked_n16rot_path,
-        aliked_n32_path=aliked_n32_path
-    )
-    logger.info("Starting feature extraction with COLMAP ...")
-    t0 = time.time()
-    run_subprocess(feat_extraction_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
-    feature_extraction_time = time.time() - t0
-    logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
+    if len(input_subfolders) <= 1:
+        if not images_full_path:
+            logger.error("Cannot create mask: no input images found")
+            sys.exit(1)
+        camera_mask_path = os.path.join(args.source_path, "mask.png")
+        create_mask_for_image(images_full_path[0], camera_mask_path, *mask_params)
+        logger.info(f"Created camera mask: {camera_mask_path}")
+    else:
+        image_mask_path = os.path.join(args.source_path, "mask")
+        create_image_masks(
+            images_dir=images_dir,
+            image_paths=images_full_path,
+            mask_dir=image_mask_path,
+            corner_width=args.corner_width,
+            corner_height=args.corner_height,
+            center_width=args.center_width,
+            center_height=args.center_height,
+        )
+        logger.info(f"Created image masks under: {image_mask_path}")
+
+
+# ========================= Feature extraction ==================================
+feat_extraction_cmd = get_feature_extractor_cmd(
+    colmap_command=colmap_command,
+    log_level=log_level,
+    database_path=database_path,
+    images_path=images_dir,
+    feature_type=args.feature_type,
+    camera_mask_path=camera_mask_path,
+    image_mask_path=image_mask_path,
+    single_camera_per_image=int(args.single_image),
+    single_camera_per_fold=int(args.single_fold),
+    single_camera=int(args.single_camera),
+    camera_model=args.camera,
+    default_focal_length_factor=args.default_focal_length_factor,
+    camera_parameters=args.camera_params,
+    use_gpu=use_gpu,
+    max_image_size=args.max_image_size,
+    max_feature_num=args.max_feature_num,
+    anms_selected_num=args.anms_selected_num,
+    cell_num=args.cell_num,
+    per_cell_num=args.per_cell_num,
+    sift_peak_threshold=args.sift_peak_threshold,
+    sift_first_octave=args.sift_first_octave,
+    aliked_n16rot_path=aliked_n16rot_path,
+    aliked_n32_path=aliked_n32_path,
+    loma_detector_model_path=loma_detector_model_path,
+    loma_descriptor_model_path=loma_descriptor_model_path,
+    loma_descriptor_model_path_bf16=loma_descriptor_model_path_bf16,
+    loma_descriptor_b128_model_path=loma_descriptor_b128_model_path)
+
+logger.info("Starting feature extraction with COLMAP ...")
+t0 = time.time()
+run_subprocess(feat_extraction_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+feature_extraction_time = time.time() - t0
+logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 
 if args.pos_file:
     pose_importer_cmd = [
@@ -464,168 +594,170 @@ if args.visualize_keypoints:
 
 # ========================= Feature matching =========================
 logger.info("Starting feature matching...")
-if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
-    # Run LightGlue feature matching
-    # args.match_strategy = "threshold"
-    logger.info(f"  Match strategy: {args.match_strategy}")
-    if args.match_strategy in ["nearest_k", "threshold"]:
-        logger.info(f"  Max matches per image: {args.max_matches_per_image}")    
-    feature_type = "aliked" if args.feature_type.lower().startswith("aliked") else args.feature_type
-    logger.info(f"Using {feature_type} features for matching")
-   
-    match_start = time.time()
-    feat_match_time = match_features_with_lightglue(
-        current_path,
-        feature_type,
-        database_path,
-        image_features,
-        image_id_map,
-        match_list_path=matched_images_pairs_path,
-        match_strategy=args.match_strategy,
-        max_matches_per_image=args.max_matches_per_image,
-        min_matches_per_image=args.min_matches_per_image,
-        similarity_threshold=args.similarity_threshold,
-        logger=logger
-    )
-
-    # --- Import matches using COLMAP matches_importer ---
-    logger.info("Importing matches into COLMAP database using matches_importer...")
-    logger.info(f"Match list path: {matched_images_pairs_path}")
-    logger.info(f"Database path: {database_path}")
-    # feature_match_type = "SIFT_BRUTEFORCE"
-    matches_importer_cmd = get_matches_importer_cmd(
+ 
+match_start = time.time()
+if args.match_strategy == "exhaustive":
+    feat_matching_cmd = get_exhaustive_matcher_cmd(
         colmap_command=colmap_command,
-        log_level = log_level, 
+        log_level=log_level,
+        database_path=database_path,
+        feature_match_type=feature_match_type,
+        use_gpu=use_gpu,
+        max_feature_num=args.max_feature_num*4,
+        min_num_inliers=min_num_inliers,
+        min_inlier_ratio=min_inlier_ratio,
+        sift_match_max_distance=args.sift_match_max_distance,
+        sift_match_max_ratio=args.sift_match_max_ratio,
+        sift_lightglue_match_path=sift_lightglue_match_path,
+        bruteforce_match_path=bruteforce_match_path,
+        aliked_lightglue_match_path=aliked_lightglue_match_path,
+        b_model_path=loma_match_b_model_path,
+        b_model_path_bf16=loma_match_b_model_path_bf16,
+        b128_model_path=loma_match_b128_model_path,
+        b128_model_path_bf16=loma_match_b128_model_path_bf16,
+        r_model_path=loma_match_r_model_path,
+        r_model_path_bf16=loma_match_r_model_path_bf16,
+        l_model_path=loma_match_l_model_path,
+        l_model_path_bf16=loma_match_l_model_path_bf16,
+        g_model_path=loma_match_g_model_path,
+        g_model_path_bf16=loma_match_g_model_path_bf16,          
+        two_view_geometry_max_error=args.two_view_geometry_max_error
+    )
+elif args.match_strategy == "custom":
+    logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
+    
+    # Use matches_importer to import the sequential match list
+    feat_matching_cmd = get_matches_importer_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
         database_path=database_path,
         matched_images_pairs_path=matched_images_pairs_path,
-        feature_match_type = feature_match_type, 
-        use_gpu = use_gpu,
-        max_feature_num = args.max_feature_num,
-        min_num_inliers = min_num_inliers,
-        min_inlier_ratio = min_inlier_ratio,
-        two_view_geometry_max_error = args.two_view_geometry_max_error,                             
-        sift_lightglue_match_path = sift_lightglue_match_path,
-        bruteforce_match_path = bruteforce_match_path,
-        aliked_lightglue_match_path = aliked_lightglue_match_path
-    )
-    run_subprocess(matches_importer_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
-    feature_matching_time = time.time() - match_start + pre_match_time
-    logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
+        feature_match_type=feature_match_type,
+        use_gpu=use_gpu,
+        max_feature_num=args.max_feature_num * 4,
+        sift_lightglue_match_path=sift_lightglue_match_path,
+        bruteforce_match_path=bruteforce_match_path,
+        aliked_lightglue_match_path=aliked_lightglue_match_path,
+        b_model_path=loma_match_b_model_path,
+        b_model_path_bf16=loma_match_b_model_path_bf16,
+        b128_model_path=loma_match_b128_model_path,
+        b128_model_path_bf16=loma_match_b128_model_path_bf16,
+        r_model_path=loma_match_r_model_path,
+        r_model_path_bf16=loma_match_r_model_path_bf16,
+        l_model_path=loma_match_l_model_path,
+        l_model_path_bf16=loma_match_l_model_path_bf16,
+        g_model_path=loma_match_g_model_path,
+        g_model_path_bf16=loma_match_g_model_path_bf16,          
+        min_num_inliers=min_num_inliers,
+        min_inlier_ratio=min_inlier_ratio,
+        two_view_geometry_max_error=args.two_view_geometry_max_error
+    )        
 
-else:    
-    match_start = time.time()
-    if args.match_strategy == "exhaustive":
-        feat_matching_cmd = get_exhaustive_matcher_cmd(
-            colmap_command=colmap_command,
-            log_level=log_level,
-            database_path=database_path,
-            feature_match_type=feature_match_type,
-            use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num*4,
-            min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio,
-            sift_match_max_distance=args.sift_match_max_distance,
-            sift_match_max_ratio=args.sift_match_max_ratio,
-            sift_lightglue_match_path=sift_lightglue_match_path,
-            bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path,
-            two_view_geometry_max_error=args.two_view_geometry_max_error
-        )
-    elif args.match_strategy == "custom":
-        logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
-        
-        # Use matches_importer to import the sequential match list
-        feat_matching_cmd = get_matches_importer_cmd(
-            colmap_command=colmap_command,
-            log_level=log_level,
-            database_path=database_path,
-            matched_images_pairs_path=matched_images_pairs_path,
-            feature_match_type=feature_match_type,
-            use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num * 4,
-            sift_lightglue_match_path=sift_lightglue_match_path,
-            bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path,
-            min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio,
-            two_view_geometry_max_error=args.two_view_geometry_max_error
-        )        
+elif args.match_strategy == "sequential":
+    # Generate sequential match list with circular overlap
+    logger.info("Generating sequential match pairs...")
     
-    elif args.match_strategy == "sequential":
-        # Generate sequential match list with circular overlap
-        logger.info("Generating sequential match pairs...")
-        
-        # Generate match pairs and save to file
-        match_pairs = get_sequential_match_list(
-            image_names=images_full_path,
-            overlap=args.sequential_overlap,
-            output_file=matched_images_pairs_path,
-            logger=logger
-        )
-        
-        logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={args.sequential_overlap})")
-        
-        # Use matches_importer to import the sequential match list
-        feat_matching_cmd = get_matches_importer_cmd(
-            colmap_command=colmap_command,
-            log_level=log_level,
-            database_path=database_path,
-            matched_images_pairs_path=matched_images_pairs_path,
-            feature_match_type=feature_match_type,
-            use_gpu=use_gpu,
-            max_feature_num=args.max_feature_num,
-            sift_lightglue_match_path=sift_lightglue_match_path,
-            bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path,
-            min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio
-        )
-    elif args.match_strategy == "vocab_tree":
-        feat_matching_cmd = get_vocab_tree_matcher_cmd(
-            colmap_command=colmap_command,
-            log_level=log_level,
-            database_path=database_path,
-            feature_match_type=feature_match_type,
-            use_gpu=use_gpu,
-            sift_lightglue_match_path=sift_lightglue_match_path,
-            bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path,     
-            vocab_path=vocab_path,                   
-            max_feature_num=args.max_feature_num * 4,
-            max_matches_per_image=args.max_matches_per_image,
-            min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio,
-            sift_match_max_distance=args.sift_match_max_distance,
-            sift_match_max_ratio=args.sift_match_max_ratio,
-            two_view_geometry_max_error=args.two_view_geometry_max_error,
-            vocab_feature_num=0
-        )
-    elif args.match_strategy == "spatial":
-        feat_matching_cmd = get_spatial_matcher_cmd(
-            colmap_command=colmap_command,
-            log_level=log_level,
-            database_path=database_path,
-            feature_match_type=feature_match_type,
-            use_gpu=use_gpu,
-            sift_lightglue_match_path=sift_lightglue_match_path,
-            bruteforce_match_path=bruteforce_match_path,
-            aliked_lightglue_match_path=aliked_lightglue_match_path,                    
-            max_feature_num=args.max_feature_num * 4,
-            min_num_inliers=min_num_inliers,
-            min_inlier_ratio=min_inlier_ratio,
-            sift_match_max_distance=args.sift_match_max_distance,
-            sift_match_max_ratio=args.sift_match_max_ratio,
-            two_view_geometry_max_error=args.two_view_geometry_max_error,
-            max_num_neighbors=args.max_matches_per_image,
-            min_num_neighbors=args.min_matches_per_image,
-            farest_image_distance=args.farest_image_distance
-        )
-    else:
-        logger.error(f"Unsupported match strategy: {args.match_strategy}")
-        sys.exit(1)
-    run_subprocess(feat_matching_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
-    feature_matching_time = time.time() - match_start + pre_match_time
-    logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
+    # Generate match pairs and save to file
+    match_pairs = get_sequential_match_list(
+        image_names=images_full_path,
+        overlap=args.sequential_overlap,
+        output_file=matched_images_pairs_path,
+        logger=logger
+    )
+    
+    logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={args.sequential_overlap})")
+    
+    # Use matches_importer to import the sequential match list
+    feat_matching_cmd = get_matches_importer_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        matched_images_pairs_path=matched_images_pairs_path,
+        feature_match_type=feature_match_type,
+        use_gpu=use_gpu,
+        max_feature_num=args.max_feature_num,
+        sift_lightglue_match_path=sift_lightglue_match_path,
+        bruteforce_match_path=bruteforce_match_path,
+        aliked_lightglue_match_path=aliked_lightglue_match_path,
+        b_model_path=loma_match_b_model_path,
+        b_model_path_bf16=loma_match_b_model_path_bf16,
+        b128_model_path=loma_match_b128_model_path,
+        b128_model_path_bf16=loma_match_b128_model_path_bf16,
+        r_model_path=loma_match_r_model_path,
+        r_model_path_bf16=loma_match_r_model_path_bf16,
+        l_model_path=loma_match_l_model_path,
+        l_model_path_bf16=loma_match_l_model_path_bf16,
+        g_model_path=loma_match_g_model_path,
+        g_model_path_bf16=loma_match_g_model_path_bf16,          
+        min_num_inliers=min_num_inliers,
+        min_inlier_ratio=min_inlier_ratio
+    )
+elif args.match_strategy == "vocab_tree":
+    feat_matching_cmd = get_vocab_tree_matcher_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        feature_match_type=feature_match_type,
+        use_gpu=use_gpu,
+        vocab_path=vocab_path,  
+        sift_lightglue_match_path=sift_lightglue_match_path,
+        bruteforce_match_path=bruteforce_match_path,
+        aliked_lightglue_match_path=aliked_lightglue_match_path,   
+        b_model_path=loma_match_b_model_path,
+        b_model_path_bf16=loma_match_b_model_path_bf16,
+        b128_model_path=loma_match_b128_model_path,
+        b128_model_path_bf16=loma_match_b128_model_path_bf16,
+        r_model_path=loma_match_r_model_path,
+        r_model_path_bf16=loma_match_r_model_path_bf16,
+        l_model_path=loma_match_l_model_path,
+        l_model_path_bf16=loma_match_l_model_path_bf16,
+        g_model_path=loma_match_g_model_path,
+        g_model_path_bf16=loma_match_g_model_path_bf16,                            
+        max_feature_num=args.max_feature_num * 4,
+        max_matches_per_image=args.max_matches_per_image,
+        min_num_inliers=min_num_inliers,
+        min_inlier_ratio=min_inlier_ratio,
+        sift_match_max_distance=args.sift_match_max_distance,
+        sift_match_max_ratio=args.sift_match_max_ratio,
+        two_view_geometry_max_error=args.two_view_geometry_max_error,
+        vocab_feature_num=0
+    )
+elif args.match_strategy == "spatial":
+    feat_matching_cmd = get_spatial_matcher_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        feature_match_type=feature_match_type,
+        use_gpu=use_gpu,
+        sift_lightglue_match_path=sift_lightglue_match_path,
+        bruteforce_match_path=bruteforce_match_path,
+        aliked_lightglue_match_path=aliked_lightglue_match_path,   
+        b_model_path=loma_match_b_model_path,
+        b_model_path_bf16=loma_match_b_model_path_bf16,
+        b128_model_path=loma_match_b128_model_path,
+        b128_model_path_bf16=loma_match_b128_model_path_bf16,
+        r_model_path=loma_match_r_model_path,
+        r_model_path_bf16=loma_match_r_model_path_bf16,
+        l_model_path=loma_match_l_model_path,
+        l_model_path_bf16=loma_match_l_model_path_bf16,
+        g_model_path=loma_match_g_model_path,
+        g_model_path_bf16=loma_match_g_model_path_bf16,                           
+        max_feature_num=args.max_feature_num * 4,
+        min_num_inliers=min_num_inliers,
+        min_inlier_ratio=min_inlier_ratio,
+        sift_match_max_distance=args.sift_match_max_distance,
+        sift_match_max_ratio=args.sift_match_max_ratio,
+        two_view_geometry_max_error=args.two_view_geometry_max_error,
+        max_num_neighbors=args.max_matches_per_image,
+        min_num_neighbors=args.min_matches_per_image,
+        farest_image_distance=args.farest_image_distance
+    )
+else:
+    logger.error(f"Unsupported match strategy: {args.match_strategy}")
+    sys.exit(1)
+run_subprocess(feat_matching_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+feature_matching_time = time.time() - match_start + pre_match_time
+logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
 matched_image_pairs_num = get_matched_image_pairs(database_path)
 logger.info(f"Total matched image pairs: {matched_image_pairs_num}")
