@@ -66,23 +66,43 @@ def compute_camera_center(img):
     return -R.T @ img.tvec
 
 
-def main():
-    args = parse_args()
+def convert_colmap_to_prior_json(
+    sparse_dir,
+    json_path,
+    cord_type="cartesian",
+    cov_xx=1.0,
+    cov_yy=1.0,
+    cov_zz=1.0,
+):
+    """将 COLMAP 稀疏重建结果转换为先验位置 JSON 文件。
 
-    sparse_dir = Path(args.sparse).resolve()
+    参数：
+        sparse_dir: COLMAP 稀疏重建目录，包含 cameras、images、points3D
+            的 .bin 或 .txt 文件。
+        json_path: 输出先验位置 JSON 文件路径。
+        cord_type: 输出 JSON 中的坐标系类型字段。
+        cov_xx: X 方向协方差值。
+        cov_yy: Y 方向协方差值。
+        cov_zz: Z 方向协方差值。
+
+    返回：
+        写入 JSON 的图像位姿记录数量。
+
+    异常：
+        FileNotFoundError: sparse_dir 不存在或不是目录。
+        ValueError: sparse_dir 中没有有效的 COLMAP 稀疏模型。
+    """
+    sparse_dir = Path(sparse_dir).resolve()
     if not sparse_dir.is_dir():
-        print(f"错误: sparse 目录不存在或不是目录: {sparse_dir}", file=sys.stderr)
-        sys.exit(1)
+        raise FileNotFoundError(f"sparse 目录不存在或不是目录: {sparse_dir}")
 
     # 读取 COLMAP 稀疏模型（自动检测 .bin / .txt）
     cameras, images, points3D = read_model(str(sparse_dir))
     if images is None:
-        print(
-            f"错误: 无法在 {sparse_dir} 中检测到有效的 COLMAP 模型"
-            "（需要 cameras/images/points3D 的 .bin 或 .txt）",
-            file=sys.stderr,
+        raise ValueError(
+            f"无法在 {sparse_dir} 中检测到有效的 COLMAP 模型"
+            "（需要 cameras/images/points3D 的 .bin 或 .txt）"
         )
-        sys.exit(1)
 
     print(
         f"读取到 {len(images)} 张图像, {len(cameras)} 个相机, "
@@ -98,19 +118,36 @@ def main():
             "x": float(C[0]),
             "y": float(C[1]),
             "z": float(C[2]),
-            "cov_xx": args.cov_xx,
-            "cov_yy": args.cov_yy,
-            "cov_zz": args.cov_zz,
+            "cov_xx": cov_xx,
+            "cov_yy": cov_yy,
+            "cov_zz": cov_zz,
         })
 
-    data = {"cord_type": args.cord_type, "images": records}
+    data = {"cord_type": cord_type, "images": records}
 
-    out_path = Path(args.output)
+    out_path = Path(json_path).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
     print(f"成功: 共写入 {len(records)} 条记录到 {out_path}")
+    return len(records)
+
+
+def main():
+    args = parse_args()
+    try:
+        convert_colmap_to_prior_json(
+            sparse_dir=args.sparse,
+            json_path=args.output,
+            cord_type=args.cord_type,
+            cov_xx=args.cov_xx,
+            cov_yy=args.cov_yy,
+            cov_zz=args.cov_zz,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        print(f"错误: {error}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

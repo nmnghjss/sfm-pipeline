@@ -85,6 +85,28 @@ def umeyama_align(X, Y, with_scale=True):
     return s, R, t
 
 
+def rotmat_to_axis_angle(R):
+    """Convert a 3x3 rotation matrix to a unit axis and rotation angle."""
+    cos_angle = np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)
+    angle = np.arccos(cos_angle)
+
+    if np.isclose(angle, 0.0):
+        return np.zeros(3), 0.0
+
+    if np.isclose(angle, np.pi):
+        eigenvalues, eigenvectors = np.linalg.eigh((R + np.eye(3)) / 2.0)
+        axis = eigenvectors[:, np.argmax(eigenvalues)]
+        axis /= np.linalg.norm(axis)
+        return axis, angle
+
+    axis = np.array([
+        R[2, 1] - R[1, 2],
+        R[0, 2] - R[2, 0],
+        R[1, 0] - R[0, 1],
+    ]) / (2.0 * np.sin(angle))
+    return axis, angle
+
+
 def umeyama_align_ransac(X_dict, Y_dict, with_scale=True, max_iters=1000, inlier_threshold=1.0, min_inliers=None, random_seed=None):
     """
     使用RANSAC对umeyama对齐进行鲁棒估计，处理外点。
@@ -365,6 +387,11 @@ def align_and_compute_error(base_images_pose:dict, update_images_pose:dict, visu
     print("scale:", scale)
     print("R:\n", R_align)
     print("t:", shift)        
+    rotation_axis, rotation_angle = rotmat_to_axis_angle(R_align)
+    print("rotation axis:", rotation_axis)
+    print("rotation angle: {:.6f} rad ({:.6f} deg)".format(
+        rotation_angle, np.degrees(rotation_angle)
+    ))
 
     # 转换相机位姿并计算误差
     for name, image in base_images_pose.items():

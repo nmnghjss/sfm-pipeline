@@ -38,6 +38,7 @@ from calibration_utils import build_prior_cameras_from_calibration
 from match_utils import compute_matched_image_pairs_by_pose_prior
 from database import initialize_colmap_database, initialize_colmap_database_from_prior_camera_file
 from feature_extractor_cmd import get_feature_extractor_cmd
+from feature_extractor_external import extract_neural_features
 from match_cmd import (
     get_exhaustive_matcher_cmd,
     get_spatial_matcher_cmd,
@@ -45,8 +46,9 @@ from match_cmd import (
     get_sequential_match_list,
     get_vocab_tree_matcher_cmd
 )
+from match_external import match_features_with_lightglue
 from read_write_model import read_images_binary, write_images_binary
-
+from script.convert_colmap_to_json import convert_colmap_to_prior_json
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
@@ -67,10 +69,10 @@ parser.add_argument("--init_camera", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="LOMA_B128", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="LOMA_B128", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_alg", "-ma", type=str, default="SIFT_BRUTEFORCE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
 parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
 parser.add_argument("--max_feature_num", "-mfn", default=2000, type=int, help="Maximum number of features to extract per image")
@@ -107,6 +109,8 @@ parser.add_argument("--log_level", default="0", type=int, help="Set the logging 
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
 parser.add_argument("--visualize_keypoints", "-viskpts", action="store_true", help="Whether to visualize all keypoints on each image")
 parser.add_argument("--clean", action="store_true", help="Whether to clean the output directory")
+parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
+parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--farest_image_distance", "-fid", type=float, default=400.0, help="Maximum distance between images for spatial matching")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
@@ -294,6 +298,7 @@ if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
     colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.1.0\\bin\\colmap.exe"
+    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-260826-dev_wl\\colmap.exe"
     # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260819/colmap.exe")
     
 else:
@@ -367,6 +372,7 @@ input_img_num, images_full_path = count_images_in_dir_recursive(images_dir)
 logger.info(f"input images num: {input_img_num}")
 image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
 images_full_path = sorted(images_full_path)
+images_list_path_file = ""
 logger.info(f"Found {len(images_full_path)} images")
 
 # ======================== GPU setup ==========================================
@@ -376,11 +382,15 @@ use_gpu = 0 if args.no_gpu else 1
 prior_cameras = None
 prior_images = None
 if args.pose_prior is not None and len(args.pose_prior) > 0:
+    if not os.path.isabs(args.pose_prior):
+        args.pose_prior = os.path.join(args.source_path, args.pose_prior)
+
+    args.pos_file = os.path.join(args.source_path, "pose.json")
+    convert_colmap_to_prior_json(args.pose_prior,  args.pos_file, "cartesian")
+
     pre_match_start = time.time()
     logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
 
-    if not os.path.isabs(args.pose_prior):
-        args.pose_prior = os.path.join(args.source_path, args.pose_prior)
     prior_cameras, prior_images = compute_matched_image_pairs_by_pose_prior(
         args.pose_prior,
         matched_images_pairs_path,
@@ -405,11 +415,18 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     prior_images_set = {name.replace('\\', '/') for name in prior_images_list}
 
     # 遍历副本，避免在遍历过程中原地删除导致漏判/漏删
+    images_list_path = []
     for img_path in list(images_full_path):
         rel_path = os.path.relpath(img_path, images_dir).replace('\\', '/')
         if rel_path not in prior_images_set:
             logger.warning(f"Image {rel_path} does not have prior-pose, please check consistency between prior pose file and input images")
             images_full_path.remove(img_path)
+        else:
+            images_list_path.append(rel_path)
+    images_list_path_file = os.path.join(distorted_sparse_path, "images_list.txt")
+    with open(images_list_path_file, 'w') as f:
+        for rel_path in images_list_path:
+            f.write(f"{rel_path}\n")
 
     # input("Press Enter to continue with feature extraction and mapping using the prior-pose-based image pairs...")
     pre_match_time = time.time() - pre_match_start
@@ -451,6 +468,11 @@ else:
         if calib_result is not None:
             prior_cameras, prior_images = calib_result
             args.init_camera = True
+
+
+    if args.external_feature or args.external_match:
+        args.init_camera = True  # Ensure database is initialized if using external feature extraction or matching
+
 
     if args.init_camera or prior_cameras:
         camera_assignment = "global" 
@@ -514,40 +536,69 @@ if args.create_mask:
 
 
 # ========================= Feature extraction ==================================
-feat_extraction_cmd = get_feature_extractor_cmd(
-    colmap_command=colmap_command,
-    log_level=log_level,
-    database_path=database_path,
-    images_path=images_dir,
-    feature_type=args.feature_type,
-    camera_mask_path=camera_mask_path,
-    image_mask_path=image_mask_path,
-    single_camera_per_image=int(args.single_image),
-    single_camera_per_fold=int(args.single_fold),
-    single_camera=int(args.single_camera),
-    camera_model=args.camera,
-    default_focal_length_factor=args.default_focal_length_factor,
-    camera_parameters=args.camera_params,
-    use_gpu=use_gpu,
-    max_image_size=args.max_image_size,
-    max_feature_num=args.max_feature_num,
-    anms_selected_num=args.anms_selected_num,
-    cell_num=args.cell_num,
-    per_cell_num=args.per_cell_num,
-    sift_peak_threshold=args.sift_peak_threshold,
-    sift_first_octave=args.sift_first_octave,
-    aliked_n16rot_path=aliked_n16rot_path,
-    aliked_n32_path=aliked_n32_path,
-    loma_detector_model_path=loma_detector_model_path,
-    loma_descriptor_model_path=loma_descriptor_model_path,
-    loma_descriptor_model_path_bf16=loma_descriptor_model_path_bf16,
-    loma_descriptor_b128_model_path=loma_descriptor_b128_model_path)
+image_features = None
+if args.external_feature:
+    logger.info("Using external feature extraction...")
 
-logger.info("Starting feature extraction with COLMAP ...")
-t0 = time.time()
-run_subprocess(feat_extraction_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
-feature_extraction_time = time.time() - t0
-logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
+    initialize_colmap_database(
+        database_path=database_path,
+        images_dir=images_dir,
+        input_images_path=images_full_path,
+        camera_model=args.camera,
+        camera_assignment="per_subfolder" if args.single_fold == "1" else "per_image",
+        logger=logger
+    )
+    
+    # Now run SuperPoint feature extraction   
+    feature_start = time.time() 
+    image_features, image_id_map, feat_ext_time = extract_neural_features(
+        feature_type=args.feature_type,
+        local_weights_root=current_path,
+        database_path=database_path,
+        images_dir=images_dir,
+        images_path=images_full_path,
+        max_num_keypoints=args.max_feature_num,
+        logger=logger
+    )
+    feature_extraction_time = time.time() - feature_start
+    logger.info(f"external feature extraction time: {feature_extraction_time:.2f} s (including database writes)")
+    
+else:
+    feat_extraction_cmd = get_feature_extractor_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        images_path=images_dir,
+        images_list_path=images_list_path_file,
+        feature_type=args.feature_type,
+        camera_mask_path=camera_mask_path,
+        image_mask_path=image_mask_path,
+        single_camera_per_image=int(args.single_image),
+        single_camera_per_fold=int(args.single_fold),
+        single_camera=int(args.single_camera),
+        camera_model=args.camera,
+        default_focal_length_factor=args.default_focal_length_factor,
+        camera_parameters=args.camera_params,
+        use_gpu=use_gpu,
+        max_image_size=args.max_image_size,
+        max_feature_num=args.max_feature_num,
+        anms_selected_num=args.anms_selected_num,
+        cell_num=args.cell_num,
+        per_cell_num=args.per_cell_num,
+        sift_peak_threshold=args.sift_peak_threshold,
+        sift_first_octave=args.sift_first_octave,
+        aliked_n16rot_path=aliked_n16rot_path,
+        aliked_n32_path=aliked_n32_path,
+        loma_detector_model_path=loma_detector_model_path,
+        loma_descriptor_model_path=loma_descriptor_model_path,
+        loma_descriptor_model_path_bf16=loma_descriptor_model_path_bf16,
+        loma_descriptor_b128_model_path=loma_descriptor_b128_model_path)
+
+    logger.info("Starting feature extraction with COLMAP ...")
+    t0 = time.time()
+    run_subprocess(feat_extraction_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+    feature_extraction_time = time.time() - t0
+    logger.info(f"Feature extraction done in {feature_extraction_time:.2f} s")
 
 if args.pos_file:
     pose_importer_cmd = [
@@ -556,6 +607,7 @@ if args.pos_file:
         "--database_path", database_path,
         "--pose_prior_json_path", args.pos_file,
     ]
+    logger.info("Importing prior poses into COLMAP database using pose_prior_importer...")
     run_subprocess(pose_importer_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 
 # ======================== config Rig =============================================
@@ -596,168 +648,218 @@ if args.visualize_keypoints:
 logger.info("Starting feature matching...")
  
 match_start = time.time()
-if args.match_strategy == "exhaustive":
-    feat_matching_cmd = get_exhaustive_matcher_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        feature_match_type=feature_match_type,
-        use_gpu=use_gpu,
-        max_feature_num=args.max_feature_num*4,
-        min_num_inliers=min_num_inliers,
-        min_inlier_ratio=min_inlier_ratio,
-        sift_match_max_distance=args.sift_match_max_distance,
-        sift_match_max_ratio=args.sift_match_max_ratio,
-        sift_lightglue_match_path=sift_lightglue_match_path,
-        bruteforce_match_path=bruteforce_match_path,
-        aliked_lightglue_match_path=aliked_lightglue_match_path,
-        b_model_path=loma_match_b_model_path,
-        b_model_path_bf16=loma_match_b_model_path_bf16,
-        b128_model_path=loma_match_b128_model_path,
-        b128_model_path_bf16=loma_match_b128_model_path_bf16,
-        r_model_path=loma_match_r_model_path,
-        r_model_path_bf16=loma_match_r_model_path_bf16,
-        l_model_path=loma_match_l_model_path,
-        l_model_path_bf16=loma_match_l_model_path_bf16,
-        g_model_path=loma_match_g_model_path,
-        g_model_path_bf16=loma_match_g_model_path_bf16,          
-        two_view_geometry_max_error=args.two_view_geometry_max_error
-    )
-elif args.match_strategy == "custom":
-    logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
-    
-    # Use matches_importer to import the sequential match list
-    feat_matching_cmd = get_matches_importer_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        matched_images_pairs_path=matched_images_pairs_path,
-        feature_match_type=feature_match_type,
-        use_gpu=use_gpu,
-        max_feature_num=args.max_feature_num * 4,
-        sift_lightglue_match_path=sift_lightglue_match_path,
-        bruteforce_match_path=bruteforce_match_path,
-        aliked_lightglue_match_path=aliked_lightglue_match_path,
-        b_model_path=loma_match_b_model_path,
-        b_model_path_bf16=loma_match_b_model_path_bf16,
-        b128_model_path=loma_match_b128_model_path,
-        b128_model_path_bf16=loma_match_b128_model_path_bf16,
-        r_model_path=loma_match_r_model_path,
-        r_model_path_bf16=loma_match_r_model_path_bf16,
-        l_model_path=loma_match_l_model_path,
-        l_model_path_bf16=loma_match_l_model_path_bf16,
-        g_model_path=loma_match_g_model_path,
-        g_model_path_bf16=loma_match_g_model_path_bf16,          
-        min_num_inliers=min_num_inliers,
-        min_inlier_ratio=min_inlier_ratio,
-        two_view_geometry_max_error=args.two_view_geometry_max_error
-    )        
-
-elif args.match_strategy == "sequential":
-    # Generate sequential match list with circular overlap
-    logger.info("Generating sequential match pairs...")
-    
-    # Generate match pairs and save to file
-    match_pairs = get_sequential_match_list(
-        image_names=images_full_path,
-        overlap=args.sequential_overlap,
-        output_file=matched_images_pairs_path,
+logger.info("Starting feature matching...")
+if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
+    # Run LightGlue feature matching
+    # args.match_strategy = "threshold"
+    logger.info(f"  Match strategy: {args.match_strategy}")
+    if args.match_strategy in ["nearest_k", "threshold"]:
+        logger.info(f"  Max matches per image: {args.max_matches_per_image}")    
+    feature_type = "aliked" if args.feature_type.lower().startswith("aliked") else args.feature_type
+    logger.info(f"Using {feature_type} features for matching")
+   
+    match_start = time.time()
+    feat_match_time = match_features_with_lightglue(
+        current_path,
+        feature_type,
+        database_path,
+        image_features,
+        image_id_map,
+        match_list_path=matched_images_pairs_path,
+        match_strategy=args.match_strategy,
+        max_matches_per_image=args.max_matches_per_image,
+        min_matches_per_image=args.min_matches_per_image,
+        similarity_threshold=args.similarity_threshold,
         logger=logger
     )
-    
-    logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={args.sequential_overlap})")
-    
-    # Use matches_importer to import the sequential match list
-    feat_matching_cmd = get_matches_importer_cmd(
+
+    # --- Import matches using COLMAP matches_importer ---
+    logger.info("Importing matches into COLMAP database using matches_importer...")
+    logger.info(f"Match list path: {matched_images_pairs_path}")
+    logger.info(f"Database path: {database_path}")
+    # feature_match_type = "SIFT_BRUTEFORCE"
+    matches_importer_cmd = get_matches_importer_cmd(
         colmap_command=colmap_command,
-        log_level=log_level,
+        log_level = log_level, 
         database_path=database_path,
         matched_images_pairs_path=matched_images_pairs_path,
-        feature_match_type=feature_match_type,
-        use_gpu=use_gpu,
-        max_feature_num=args.max_feature_num,
-        sift_lightglue_match_path=sift_lightglue_match_path,
-        bruteforce_match_path=bruteforce_match_path,
-        aliked_lightglue_match_path=aliked_lightglue_match_path,
-        b_model_path=loma_match_b_model_path,
-        b_model_path_bf16=loma_match_b_model_path_bf16,
-        b128_model_path=loma_match_b128_model_path,
-        b128_model_path_bf16=loma_match_b128_model_path_bf16,
-        r_model_path=loma_match_r_model_path,
-        r_model_path_bf16=loma_match_r_model_path_bf16,
-        l_model_path=loma_match_l_model_path,
-        l_model_path_bf16=loma_match_l_model_path_bf16,
-        g_model_path=loma_match_g_model_path,
-        g_model_path_bf16=loma_match_g_model_path_bf16,          
-        min_num_inliers=min_num_inliers,
-        min_inlier_ratio=min_inlier_ratio
+        feature_match_type = feature_match_type, 
+        use_gpu = use_gpu,
+        max_feature_num = args.max_feature_num,
+        min_num_inliers = min_num_inliers,
+        min_inlier_ratio = min_inlier_ratio,
+        two_view_geometry_max_error = args.two_view_geometry_max_error,                             
+        sift_lightglue_match_path = sift_lightglue_match_path,
+        bruteforce_match_path = bruteforce_match_path,
+        aliked_lightglue_match_path = aliked_lightglue_match_path
     )
-elif args.match_strategy == "vocab_tree":
-    feat_matching_cmd = get_vocab_tree_matcher_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        feature_match_type=feature_match_type,
-        use_gpu=use_gpu,
-        vocab_path=vocab_path,  
-        sift_lightglue_match_path=sift_lightglue_match_path,
-        bruteforce_match_path=bruteforce_match_path,
-        aliked_lightglue_match_path=aliked_lightglue_match_path,   
-        b_model_path=loma_match_b_model_path,
-        b_model_path_bf16=loma_match_b_model_path_bf16,
-        b128_model_path=loma_match_b128_model_path,
-        b128_model_path_bf16=loma_match_b128_model_path_bf16,
-        r_model_path=loma_match_r_model_path,
-        r_model_path_bf16=loma_match_r_model_path_bf16,
-        l_model_path=loma_match_l_model_path,
-        l_model_path_bf16=loma_match_l_model_path_bf16,
-        g_model_path=loma_match_g_model_path,
-        g_model_path_bf16=loma_match_g_model_path_bf16,                            
-        max_feature_num=args.max_feature_num * 4,
-        max_matches_per_image=args.max_matches_per_image,
-        min_num_inliers=min_num_inliers,
-        min_inlier_ratio=min_inlier_ratio,
-        sift_match_max_distance=args.sift_match_max_distance,
-        sift_match_max_ratio=args.sift_match_max_ratio,
-        two_view_geometry_max_error=args.two_view_geometry_max_error,
-        vocab_feature_num=0
-    )
-elif args.match_strategy == "spatial":
-    feat_matching_cmd = get_spatial_matcher_cmd(
-        colmap_command=colmap_command,
-        log_level=log_level,
-        database_path=database_path,
-        feature_match_type=feature_match_type,
-        use_gpu=use_gpu,
-        sift_lightglue_match_path=sift_lightglue_match_path,
-        bruteforce_match_path=bruteforce_match_path,
-        aliked_lightglue_match_path=aliked_lightglue_match_path,   
-        b_model_path=loma_match_b_model_path,
-        b_model_path_bf16=loma_match_b_model_path_bf16,
-        b128_model_path=loma_match_b128_model_path,
-        b128_model_path_bf16=loma_match_b128_model_path_bf16,
-        r_model_path=loma_match_r_model_path,
-        r_model_path_bf16=loma_match_r_model_path_bf16,
-        l_model_path=loma_match_l_model_path,
-        l_model_path_bf16=loma_match_l_model_path_bf16,
-        g_model_path=loma_match_g_model_path,
-        g_model_path_bf16=loma_match_g_model_path_bf16,                           
-        max_feature_num=args.max_feature_num * 4,
-        min_num_inliers=min_num_inliers,
-        min_inlier_ratio=min_inlier_ratio,
-        sift_match_max_distance=args.sift_match_max_distance,
-        sift_match_max_ratio=args.sift_match_max_ratio,
-        two_view_geometry_max_error=args.two_view_geometry_max_error,
-        max_num_neighbors=args.max_matches_per_image,
-        min_num_neighbors=args.min_matches_per_image,
-        farest_image_distance=args.farest_image_distance
-    )
-else:
-    logger.error(f"Unsupported match strategy: {args.match_strategy}")
-    sys.exit(1)
-run_subprocess(feat_matching_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
-feature_matching_time = time.time() - match_start + pre_match_time
-logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
+    run_subprocess(matches_importer_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+    feature_matching_time = time.time() - match_start + pre_match_time
+    logger.info(f"Matches imported successfully, match time: {feat_match_time}, match and import time: {feature_matching_time}")    
+
+else:  
+    if args.match_strategy == "exhaustive":
+        feat_matching_cmd = get_exhaustive_matcher_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num*4,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            sift_match_max_distance=args.sift_match_max_distance,
+            sift_match_max_ratio=args.sift_match_max_ratio,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            b_model_path=loma_match_b_model_path,
+            b_model_path_bf16=loma_match_b_model_path_bf16,
+            b128_model_path=loma_match_b128_model_path,
+            b128_model_path_bf16=loma_match_b128_model_path_bf16,
+            r_model_path=loma_match_r_model_path,
+            r_model_path_bf16=loma_match_r_model_path_bf16,
+            l_model_path=loma_match_l_model_path,
+            l_model_path_bf16=loma_match_l_model_path_bf16,
+            g_model_path=loma_match_g_model_path,
+            g_model_path_bf16=loma_match_g_model_path_bf16,          
+            two_view_geometry_max_error=args.two_view_geometry_max_error
+        )
+    elif args.match_strategy == "custom":
+        logger.info(f"Matching features based on custom image pairs from: {matched_images_pairs_path}")
+        
+        # Use matches_importer to import the sequential match list
+        feat_matching_cmd = get_matches_importer_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            matched_images_pairs_path=matched_images_pairs_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num * 4,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            b_model_path=loma_match_b_model_path,
+            b_model_path_bf16=loma_match_b_model_path_bf16,
+            b128_model_path=loma_match_b128_model_path,
+            b128_model_path_bf16=loma_match_b128_model_path_bf16,
+            r_model_path=loma_match_r_model_path,
+            r_model_path_bf16=loma_match_r_model_path_bf16,
+            l_model_path=loma_match_l_model_path,
+            l_model_path_bf16=loma_match_l_model_path_bf16,
+            g_model_path=loma_match_g_model_path,
+            g_model_path_bf16=loma_match_g_model_path_bf16,          
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error
+        )        
+
+    elif args.match_strategy == "sequential":
+        # Generate sequential match list with circular overlap
+        logger.info("Generating sequential match pairs...")
+        
+        # Generate match pairs and save to file
+        match_pairs = get_sequential_match_list(
+            image_names=images_full_path,
+            overlap=args.sequential_overlap,
+            output_file=matched_images_pairs_path,
+            logger=logger
+        )
+        
+        logger.info(f"Generated {len(match_pairs)} sequential match pairs (overlap={args.sequential_overlap})")
+        
+        # Use matches_importer to import the sequential match list
+        feat_matching_cmd = get_matches_importer_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            matched_images_pairs_path=matched_images_pairs_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            b_model_path=loma_match_b_model_path,
+            b_model_path_bf16=loma_match_b_model_path_bf16,
+            b128_model_path=loma_match_b128_model_path,
+            b128_model_path_bf16=loma_match_b128_model_path_bf16,
+            r_model_path=loma_match_r_model_path,
+            r_model_path_bf16=loma_match_r_model_path_bf16,
+            l_model_path=loma_match_l_model_path,
+            l_model_path_bf16=loma_match_l_model_path_bf16,
+            g_model_path=loma_match_g_model_path,
+            g_model_path_bf16=loma_match_g_model_path_bf16,          
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio
+        )
+    elif args.match_strategy == "vocab_tree":
+        feat_matching_cmd = get_vocab_tree_matcher_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            vocab_path=vocab_path,  
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,   
+            b_model_path=loma_match_b_model_path,
+            b_model_path_bf16=loma_match_b_model_path_bf16,
+            b128_model_path=loma_match_b128_model_path,
+            b128_model_path_bf16=loma_match_b128_model_path_bf16,
+            r_model_path=loma_match_r_model_path,
+            r_model_path_bf16=loma_match_r_model_path_bf16,
+            l_model_path=loma_match_l_model_path,
+            l_model_path_bf16=loma_match_l_model_path_bf16,
+            g_model_path=loma_match_g_model_path,
+            g_model_path_bf16=loma_match_g_model_path_bf16,                            
+            max_feature_num=args.max_feature_num * 4,
+            max_matches_per_image=args.max_matches_per_image,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            sift_match_max_distance=args.sift_match_max_distance,
+            sift_match_max_ratio=args.sift_match_max_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error,
+            vocab_feature_num=0
+        )
+    elif args.match_strategy == "spatial":
+        feat_matching_cmd = get_spatial_matcher_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,   
+            b_model_path=loma_match_b_model_path,
+            b_model_path_bf16=loma_match_b_model_path_bf16,
+            b128_model_path=loma_match_b128_model_path,
+            b128_model_path_bf16=loma_match_b128_model_path_bf16,
+            r_model_path=loma_match_r_model_path,
+            r_model_path_bf16=loma_match_r_model_path_bf16,
+            l_model_path=loma_match_l_model_path,
+            l_model_path_bf16=loma_match_l_model_path_bf16,
+            g_model_path=loma_match_g_model_path,
+            g_model_path_bf16=loma_match_g_model_path_bf16,                           
+            max_feature_num=args.max_feature_num * 4,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            sift_match_max_distance=args.sift_match_max_distance,
+            sift_match_max_ratio=args.sift_match_max_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error,
+            max_num_neighbors=args.max_matches_per_image,
+            min_num_neighbors=args.min_matches_per_image,
+            farest_image_distance=args.farest_image_distance
+        )
+    else:
+        logger.error(f"Unsupported match strategy: {args.match_strategy}")
+        sys.exit(1)
+    run_subprocess(feat_matching_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+    feature_matching_time = time.time() - match_start + pre_match_time
+    logger.info(f"Feature matching done in {feature_matching_time:.2f} s")
 
 matched_image_pairs_num = get_matched_image_pairs(database_path)
 logger.info(f"Total matched image pairs: {matched_image_pairs_num}")
@@ -948,9 +1050,9 @@ elif args.mapper == "pose_prior_incremental":
 elif args.mapper == "pose_prior_global":
     logger.info("Using global mapper with pose prior...")
     max_normalized_reproj_error = args.max_normalized_reproj_error
-    if prior_focal_length is not None:
-        max_normalized_reproj_error = 3 / prior_focal_length
-        logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
+    # if prior_focal_length is not None:
+    #     max_normalized_reproj_error = 3 / prior_focal_length
+    #     logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
     mapper_cmd = get_pose_prior_global_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -977,9 +1079,9 @@ elif args.mapper == "pose_prior_global":
         max_normalized_reproj_error=max_normalized_reproj_error,
         ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
         min_tri_angle_deg=args.global_mapper_min_tri_angle_deg,
-        tri_complete_max_reproj_error=5, #15
-        tri_merge_max_reproj_error=5, #15
-        tri_min_angle= 2, #1       
+        tri_complete_max_reproj_error=15, #15
+        tri_merge_max_reproj_error=15, #15
+        tri_min_angle= 1, #1       
         track_min_num_views_per_track=args.track_min_num_views_per_track
     )
 elif args.mapper == "pos_prior":
@@ -1140,14 +1242,16 @@ for item in os.listdir(sparse_output_path):
 logger.info("Sparse output successfully organized into sparse/0.")
 
 # ========================align sparse model to prior pose (if provided)=========================
+alined_dir = os.path.join(output_path, "sparse_aligned")
+os.makedirs(alined_dir, exist_ok=True)
 get_aligned_sparse_model_cmd = get_model_align_cmd(colmap_command,
                     log_level= log_level,
                     database_path = database_path,
                     input_path = largest_sparse_folder,
-                    output_path = largest_sparse_folder,
+                    output_path = alined_dir,
                     ref_is_gps = 0,
-                    alignment_max_error = 10.0)
-
+                    alignment_max_error = 1.0)
+logger.info("Aligning sparse model to prior image positions (if provided) ...")
 run_subprocess(get_aligned_sparse_model_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 
 

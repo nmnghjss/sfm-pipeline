@@ -673,6 +673,15 @@ def initialize_colmap_database(
         # MODE: prior — use cameras and per-image camera IDs from a prior model
         # =====================================================================
         if prior_cameras is not None:
+            # 若 prior_images 为空，直接报错退出。
+            if not prior_images:
+                logger.error(
+                    "prior_cameras is provided but prior_images is empty. "
+                    "Cannot initialize database without prior image mappings."
+                )
+                db.close()
+                return False 
+                       
             # Register prior cameras in the database, preserving their original IDs
             for cam_id, cam in prior_cameras.items():
                 cam_model_id = _CAMERA_MODEL_NAME_TO_ID.get(cam.model.upper(), 4)
@@ -689,14 +698,6 @@ def initialize_colmap_database(
             # 直接将 prior_images 中的图像写入数据库。
             # 每个元素为 (image_id, image_path, camera_id)，
             # 保持数据库中的 image_id / camera_id 与先验模型一致。
-            # 若 prior_images 为空，直接报错退出。
-            if not prior_images:
-                logger.error(
-                    "prior_cameras is provided but prior_images is empty. "
-                    "Cannot initialize database without prior image mappings."
-                )
-                db.close()
-                return False
 
             for (img_id, img_name, cam_id) in prior_images:
                 img_name = img_name.replace('\\', '/')
