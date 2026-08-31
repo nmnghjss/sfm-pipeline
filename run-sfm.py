@@ -47,14 +47,22 @@ from match_cmd import (
     get_vocab_tree_matcher_cmd
 )
 from match_external import match_features_with_lightglue
-from read_write_model import read_images_binary, write_images_binary
+from read_write_model import (
+    read_cameras_binary,
+    read_images_binary,
+    write_cameras_binary,
+    write_cameras_text,
+    write_images_binary,
+)
 from script.convert_colmap_to_json import convert_colmap_to_prior_json
+from script.crop_images import crop_images
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
 parser.add_argument("--ba_local_backend", default="CERES", type=str, choices=["CERES", "CASPAR"], help="Local BA backend (e.g., Ceres, g2o)")
 parser.add_argument("--ba_global_backend", default="CERES", type=str, choices=["CERES", "CASPAR"], help="Global BA backend (e.g., Ceres, g2o)")
 parser.add_argument("--source_path", "-s", default="E:\\debug", type=str)
+parser.add_argument("--image_dir", "-id", default="input", type=str, help="Path to the directory containing images")
 parser.add_argument("--pos_file", "-pf", default="", type=str, help="Path to gps or cartesian pose file (if available)")
 parser.add_argument("--output_path", "-o", default="output-debug", type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
@@ -112,9 +120,9 @@ parser.add_argument("--clean", action="store_true", help="Whether to clean the o
 parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
 parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--farest_image_distance", "-fid", type=float, default=400.0, help="Maximum distance between images for spatial matching")
-parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
+parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=30,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
-parser.add_argument("--min_matches_per_image", "-mni", type=int, default=50,
+parser.add_argument("--min_matches_per_image", "-mni", type=int, default=30,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
@@ -123,9 +131,11 @@ parser.add_argument("--voxel_size", type=float, default=None, help="Voxel size f
 parser.add_argument("--max_angle", type=float, default=120, help="Maximum angle (in degrees) between camera views for prior pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for prior pose-based image pair generation")
 parser.add_argument("--refine_num", type=int, default=1, help="refine reconstruction iterations num")
-parser.add_argument("--undistort", type=int, default=0, help="Whether to undistort images after reconstruction")
+parser.add_argument("--undistort", type=int, default=1, help="Whether to undistort images after reconstruction")
 parser.add_argument("--unify_output_images", action="store_true")
 parser.add_argument("--monitor_memory", action="store_true", help="Monitor and report peak CPU RAM and GPU VRAM usage of COLMAP processes")
+parser.add_argument("--cropped_width", type=int, default=-1, help="the cropped image width")
+parser.add_argument("--cropper_height", type=int, default=-1, help="the cropper image height")
 parser.add_argument("--create_mask", action="store_true", help="Create binary image masks before feature extraction")
 parser.add_argument("--corner_width", type=float, default=0.0, help="Width ratio of each corner mask region, in [0, 1]")
 parser.add_argument("--corner_height", type=float, default=0.0, help="Height ratio of each corner mask region, in [0, 1]")
@@ -242,6 +252,59 @@ def create_mask_for_image(
     encoded_mask = cv2.imencode(".png", mask)[1]
     encoded_mask.tofile(mask_path)
     return mask_path
+
+
+def update_cameras_for_center_crop(cameras_bin_path, crop_width, crop_height, logger):
+    """Update COLMAP intrinsics after a centered image crop."""
+    cameras = read_cameras_binary(cameras_bin_path)
+    updated_cameras = {}
+
+    principal_point_indices = {
+        "SIMPLE_PINHOLE": (1, 2),
+        "PINHOLE": (2, 3),
+        "SIMPLE_RADIAL": (1, 2),
+        "RADIAL": (1, 2),
+        "OPENCV": (2, 3),
+        "OPENCV_FISHEYE": (2, 3),
+        "FULL_OPENCV": (2, 3),
+        "FOV": (2, 3),
+        "SIMPLE_RADIAL_FISHEYE": (1, 2),
+        "RADIAL_FISHEYE": (1, 2),
+        "THIN_PRISM_FISHEYE": (2, 3),
+    }
+
+    for camera_id, camera in cameras.items():
+        new_width = min(int(crop_width), camera.width)
+        new_height = min(int(crop_height), camera.height)
+
+        params = np.array(camera.params, dtype=np.float64, copy=True)
+        try:
+            cx_index, cy_index = principal_point_indices[camera.model]
+            params[cx_index] = new_width / 2
+            params[cy_index] = new_height / 2
+        except KeyError:
+            raise ValueError(f"Unsupported COLMAP camera model: {camera.model}")
+
+        updated_camera = camera._replace(
+            width=new_width,
+            height=new_height,
+            params=params,
+        )
+        updated_cameras[camera_id] = updated_camera
+        logger.info(
+            f"Camera {camera_id} ({camera.model}): "
+            f"size {camera.width}x{camera.height} -> {new_width}x{new_height}, "
+            f"principal point ({camera.params[cx_index]:.3f}, "
+            f"{camera.params[cy_index]:.3f}) -> "
+            f"({params[cx_index]:.3f}, {params[cy_index]:.3f})"
+        )
+
+    write_cameras_binary(updated_cameras, cameras_bin_path)
+    cameras_txt_path = os.path.splitext(cameras_bin_path)[0] + ".txt"
+    if os.path.isfile(cameras_txt_path):
+        write_cameras_text(updated_cameras, cameras_txt_path)
+
+    return updated_cameras
 
 # ============================ Logging setup ===============================
 log_level = args.log_level
@@ -365,7 +428,7 @@ distorted_sparse_path = os.path.join(output_path, "distorted/sparse")
 os.makedirs(distorted_sparse_path, exist_ok=True)
 
 database_path = os.path.join(output_path, "distorted/database.db")
-images_dir = os.path.join(args.source_path, "input")
+images_dir = os.path.join(args.source_path, args.image_dir)
 matched_images_pairs_path = os.path.join(distorted_sparse_path, "image_pairs.txt")
 
 input_img_num, images_full_path = count_images_in_dir_recursive(images_dir)
@@ -984,7 +1047,7 @@ elif args.mapper == "global":
         use_gpu=use_gpu,
         ba_backend=args.ba_global_backend,
         min_num_inliers=min_num_inliers,
-        ba_num_iterations=3,
+        ba_num_iterations=5, # 3
         gp_max_num_iterations=args.gp_max_num_iterations,
         ba_ceres_max_num_iterations=args.ba_ceres_max_num_iterations,
         ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
@@ -1221,68 +1284,79 @@ if args.undistort:
 undistort_time = time.time() - start_undistort
 logger.info(f"Image undistortion done, used time: {undistort_time:.2f} s.")
 
-# ========================= Organize sparse output to sparse/0 =============
-sparse_output_path = os.path.join(output_path, "sparse")
-os.makedirs(os.path.join(sparse_output_path, "0"), exist_ok=True)
-logger.info("Organizing sparse output files into sparse/0 ...")
-for item in os.listdir(sparse_output_path):
-    src_path = os.path.join(sparse_output_path, item)
-    dst_path = os.path.join(sparse_output_path, "0", item)
-    if os.path.isdir(src_path):
-        if item == "0":
-            continue
-        for f in os.listdir(src_path):
-            f_src = os.path.join(src_path, f)
-            f_dst = os.path.join(sparse_output_path, "0", f)
-            shutil.move(f_src, f_dst)
-        os.rmdir(src_path)
-    elif os.path.isfile(src_path):
-        shutil.move(src_path, dst_path)
-# registered_images_num, _ = count_images_in_dir_recursive(os.path.join(output_path, "images"))
-logger.info("Sparse output successfully organized into sparse/0.")
-
 # ========================align sparse model to prior pose (if provided)=========================
-alined_dir = os.path.join(output_path, "sparse_aligned")
-os.makedirs(alined_dir, exist_ok=True)
+spare_original_path = os.path.join(output_path, "sparse")
+spare_aligned_path = os.path.join(spare_original_path, "0")
+os.makedirs(spare_aligned_path, exist_ok=True)
 get_aligned_sparse_model_cmd = get_model_align_cmd(colmap_command,
                     log_level= log_level,
                     database_path = database_path,
-                    input_path = largest_sparse_folder,
-                    output_path = alined_dir,
+                    input_path = spare_original_path,
+                    output_path = spare_aligned_path,
                     ref_is_gps = 0,
                     alignment_max_error = 1.0)
 logger.info("Aligning sparse model to prior image positions (if provided) ...")
 run_subprocess(get_aligned_sparse_model_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 
+## ============================crop images =========================
+if args.cropped_width > 0 and args.cropped_height > 0:
+    undistorted_images_path = os.path.join(output_path, "images")
+    full_resolution_images_path = os.path.join(output_path, "images-full_resolution")
+    if not os.path.isdir(undistorted_images_path):
+        raise FileNotFoundError(f"Undistorted image directory not found: {undistorted_images_path}")
+    if os.path.exists(full_resolution_images_path):
+        raise FileExistsError(
+            f"Full-resolution image directory already exists: {full_resolution_images_path}"
+        )
 
-# ========================= Rename iamge name in colmap results and move all images to output/images (if needed) =========================
-if args.unify_output_images:
-    logger.info("Moving images to output/images and updating names in sparse model ...")
-    subdir_images_path = get_subfolders(os.path.join(output_path, "images"))
-    for subdir in subdir_images_path:
-        move_files(subdir, os.path.join(output_path, "images"))
-        delete_directory(subdir)
+    logger.info(
+        f"Renaming undistorted images: {undistorted_images_path} -> "
+        f"{full_resolution_images_path}"
+    )
+    os.rename(undistorted_images_path, full_resolution_images_path)
 
-    if len(subdir_images_path) > 0:
-        logger.info(f"Moved images from {len(subdir_images_path)} subdirectories to output/images and deleted the subdirectories")
-        images_result = os.path.join(output_path, "sparse/0", "images.bin")
-        images_backup = os.path.join(output_path, "sparse/0", "images_backup.bin")
-        os.rename(images_result, images_backup)
-        images = read_images_binary(images_backup)
-        for img_id, img in images.items():
-            img_name = img.name
-            img_path = os.path.join(output_path, "images", img_name)
-            # Update image name in COLMAP results to match the input image name
-            img_name = os.path.basename(img_path)
-            new_path = os.path.join(output_path, "images", img_name)
-            if not os.path.isfile(new_path):
-                logger.warning(f"Image file {new_path} does not exist, skipping image name update for image ID {img_id}")
-                continue
-            # Use _replace() to create a new Image object since namedtuple fields are immutable
-            images[img_id] = img._replace(name=img_name)
+    logger.info("Cropping undistorted images to 1600x1600 ...")
+    crop_result = crop_images(
+        input_dir=full_resolution_images_path,
+        output_dir=undistorted_images_path,
+        crop_width=args.cropped_width,
+        crop_height=args.cropped_height,
+    )
+    logger.info(f"Image cropping completed: {crop_result}")
 
-        # Write the updated model back to disk
-        write_images_binary(images, images_result)
+    ## ======================== modify intrinsic in camera.bin to adjust cropped images =============
+    cameras_bin_path = os.path.join(output_path, "sparse", "0", "cameras.bin")
+    if not os.path.isfile(cameras_bin_path):
+        raise FileNotFoundError(f"COLMAP camera file not found: {cameras_bin_path}")
+
+    logger.info("Updating sparse camera intrinsics for cropped images ...")
+    update_cameras_for_center_crop(
+        cameras_bin_path=cameras_bin_path,
+        crop_width=args.cropped_width,
+        crop_height=args.cropped_height,
+        logger=logger,
+    )
+    logger.info(f"Updated camera intrinsics: {cameras_bin_path}")
+
+
+## ========================= replace points3D in aligned sparse dir with prior points3D ===========================
+if args.pose_prior:
+    prior_sparse_path = args.pose_prior
+    point_cloud_filenames = ("points3D.bin", "points3D.txt", "points3D.ply")
+    for filename in point_cloud_filenames:
+        prior_points_path = os.path.join(prior_sparse_path, filename)
+        aligned_points_path = os.path.join(spare_aligned_path, filename)
+        if not os.path.isfile(prior_points_path):
+            logger.info(f"Prior point-cloud file not found, skipping: {prior_points_path}")
+            continue
+
+        shutil.copy2(prior_points_path, aligned_points_path)
+        logger.info(
+            f"Replaced aligned point-cloud file: {aligned_points_path} "
+            f"<- {prior_points_path}"
+        )
+else:
+    logger.info("No prior sparse directory specified; keeping aligned point-cloud files")
 
 
 # --------------------------

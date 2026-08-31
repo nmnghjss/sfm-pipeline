@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 
 def find_images(root_dir, extensions=None):
@@ -40,6 +41,78 @@ def crop_center(image, crop_width, crop_height):
     return image[y:y + ch, x:x + cw]
 
 
+def read_image_unicode(image_path):
+    """Read an image through Unicode-safe Python file I/O."""
+    try:
+        image_data = image_path.read_bytes()
+    except OSError:
+        return None
+    return cv2.imdecode(
+        np.frombuffer(image_data, dtype=np.uint8),
+        cv2.IMREAD_UNCHANGED,
+    )
+
+
+def write_image_unicode(image_path, image):
+    """Write an image through Unicode-safe Python file I/O."""
+    extension = image_path.suffix or '.png'
+    success, encoded = cv2.imencode(extension, image)
+    if not success:
+        return False
+    try:
+        image_path.write_bytes(encoded.tobytes())
+    except OSError:
+        return False
+    return True
+
+
+def crop_images(input_dir, output_dir, crop_width, crop_height, extensions=None):
+    """Crop all images in ``input_dir`` and write them to ``output_dir``."""
+    input_dir = Path(input_dir)
+    output_dir = Path(output_dir)
+
+    if crop_width <= 0 or crop_height <= 0:
+        raise ValueError("crop_width and crop_height must be positive integers")
+
+    if not input_dir.is_dir():
+        raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+
+    images = find_images(input_dir, extensions)
+    if not images:
+        print(f"No images found in: {input_dir}")
+        return {"processed": 0, "failed": 0, "total": 0}
+
+    print(f"Found {len(images)} images")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    processed = 0
+    failed = 0
+    for img_path in images:
+        # 保持输入目录下的相对子目录结构
+        rel_path = img_path.relative_to(input_dir)
+        out_path = output_dir / rel_path
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        img = read_image_unicode(img_path)
+        if img is None:
+            print(f"  [WARN] Cannot read image: {img_path}")
+            failed += 1
+            continue
+
+        cropped = crop_center(img, crop_width, crop_height)
+
+        if not write_image_unicode(out_path, cropped):
+            print(f"  [WARN] Failed to write: {out_path}")
+            failed += 1
+            continue
+        processed += 1
+        if processed % 100 == 0:
+            print(f"  Processed {processed}/{len(images)}")
+
+    print(f"Done. Cropped {processed} images, failed {failed}. Output: {output_dir}")
+    return {"processed": processed, "failed": failed, "total": len(images)}
+
+
 def main():
     parser = argparse.ArgumentParser(description="以图像中心为中心裁剪图像")
     parser.add_argument("--input_dir", "-i", required=True, help="输入图像文件夹")
@@ -50,17 +123,6 @@ def main():
                         help="可选：逗号分隔的图像扩展名，如 '.jpg,.png'（默认常见格式）")
     args = parser.parse_args()
 
-    input_dir = args.input_dir
-    output_dir = args.output_dir
-
-    if args.crop_width <= 0 or args.crop_height <= 0:
-        print("Error: crop_width and crop_height must be positive integers.")
-        return
-
-    if not os.path.isdir(input_dir):
-        print(f"Error: input directory does not exist: {input_dir}")
-        return
-
     extensions = None
     if args.extensions.strip():
         extensions = {
@@ -68,39 +130,16 @@ def main():
             for ext in args.extensions.split(',') if ext.strip()
         }
 
-    images = find_images(input_dir, extensions)
-    if not images:
-        print(f"No images found in: {input_dir}")
-        return
-
-    print(f"Found {len(images)} images")
-    os.makedirs(output_dir, exist_ok=True)
-
-    processed = 0
-    failed = 0
-    for img_path in images:
-        # 保持输入目录下的相对子目录结构
-        rel_path = img_path.relative_to(input_dir)
-        out_path = Path(output_dir) / rel_path
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-
-        img = cv2.imread(str(img_path))
-        if img is None:
-            print(f"  [WARN] Cannot read image: {img_path}")
-            failed += 1
-            continue
-
-        cropped = crop_center(img, args.crop_width, args.crop_height)
-
-        if not cv2.imwrite(str(out_path), cropped):
-            print(f"  [WARN] Failed to write: {out_path}")
-            failed += 1
-            continue
-        processed += 1
-        if processed % 100 == 0:
-            print(f"  Processed {processed}/{len(images)}")
-
-    print(f"Done. Cropped {processed} images, failed {failed}. Output: {output_dir}")
+    try:
+        crop_images(
+            args.input_dir,
+            args.output_dir,
+            args.crop_width,
+            args.crop_height,
+            extensions,
+        )
+    except (FileNotFoundError, ValueError) as error:
+        print(f"Error: {error}")
 
 
 if __name__ == "__main__":
