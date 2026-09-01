@@ -293,6 +293,7 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
                              vocab_feature_num: int = 0,                             
                              max_feature_num: int = 2048,
                              max_matches_per_image: int = 150,
+                             min_matches_per_image: int = 0,
                              min_num_inliers: int = 15,
                              min_inlier_ratio: float = 0.25,
                              sift_match_max_distance: float = 0.7,
@@ -361,7 +362,7 @@ def get_vocab_tree_matcher_cmd(colmap_command: str,
         "--VocabTreeMatching.num_images", str(max_matches_per_image), # 100
         "--VocabTreeMatching.num_nearest_neighbors", "5", # 5
         "--VocabTreeMatching.num_checks", "64",
-        "--VocabTreeMatching.num_images_after_verification", "0", # 0
+        "--VocabTreeMatching.num_images_after_verification", str(min_matches_per_image), # 0
         "--VocabTreeMatching.max_num_features", str(vocab_feature_num),
         "--VocabTreeMatching.vocab_tree_path", vocab_path,
         # "--VocabTreeMatching.match_list_path", match_list_path,
