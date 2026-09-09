@@ -15,20 +15,10 @@ Common options:
                              use 'bin' for the pipeline and COLMAP GUI
                              use 'txt' only when human-readable output is needed
                              use 'both' if unsure
-    --undistort_mode {auto,fixed}  compatibility option; calibration.json intrinsics
-                                   are always used as the undistortion target (default: fixed)
-    --balance FLOAT                OpenCV fisheye balance, only used in auto mode
-                                   (0=crop to valid region, 1=keep all pixels; default 0.0)
-    --target_width INT             output image width in fixed mode (default: 1600)
-    --target_height INT            output image height in fixed mode (default: 1600)
-    --target_fx FLOAT              output focal length x in fixed mode (default: 800.0)
-    --target_fy FLOAT              output focal length y in fixed mode (default: 800.0)
-    --target_cx FLOAT              output principal point x in fixed mode (default: 800.0)
-    --target_cy FLOAT              output principal point y in fixed mode (default: 800.0)
     --align_mode {mean,start,end,none}  how to align image and odom timestamps
                                         default: none (images are already in odom clock)
-    --num_points INT         target number of points in down-sampled point cloud
-                             default: 500000, set 0 to disable downsampling
+    --num_points INT         target number of points in two-stage down-sampling
+                             default: 50000
     --max_workers INT        parallel workers for undistortion; 0 = auto (60% of CPU cores)
     --undistort_interp {nearest,linear,cubic,lanczos4}
                              interpolation used by cv2.remap during undistortion
@@ -42,12 +32,6 @@ Common options:
 Examples:
     # Basic usage: extract from mcap + fixed 1600x1600 undistortion + txt output
     python real_time_to_colmap.py --data_dir G:/Data/Laser_data/2026-06-22_15-04-26rrrr --output_dir G:/Data/Laser_data/colmap_output
-
-    # Use manufacturer intrinsics explicitly
-    python real_time_to_colmap.py --data_dir ... --output_dir ... --target_width 1600 --target_height 1600 --target_fx 800 --target_fy 800 --target_cx 800 --target_cy 800
-
-    # Auto undistortion with balance=0.5 (original behavior)
-    python real_time_to_colmap.py --data_dir ... --output_dir ... --undistort_mode auto --balance 0.5
 
     # Reuse already-extracted/undistorted images, skip heavy steps
     python real_time_to_colmap.py --data_dir ... --output_dir ... --skip_extract --skip_undistort --skip_pointcloud
@@ -91,7 +75,6 @@ import cv2
 import open3d as o3d
 import laspy
 from scipy.spatial.transform import Slerp, Rotation as R
-from scipy.spatial import cKDTree
 from mcap.reader import make_reader
 from rosbags.typesys import Stores, get_typestore, get_types_from_msg
 from unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
@@ -173,6 +156,126 @@ def make_K(intrinsic):
         [0.0, intrinsic["fl_y"], intrinsic["cy"]],
         [0.0, 0.0, 1.0],
     ], dtype=np.float64)
+
+
+# ---------------------------------------------------------------------------
+# Point-cloud sampling
+# ---------------------------------------------------------------------------
+
+def voxel_random_sample(point_cloud, voxel_size, target_num_points,
+                        rng=None):
+    """Randomly sample points from every voxel.
+
+    The per-voxel sample count is ``ceil(target_num_points / voxel_count)``.
+    If a voxel contains fewer points than this count, all of its points are
+    retained.  The result can therefore contain slightly more than the target
+    count, as required by the per-voxel sampling rule.
+
+    Args:
+        point_cloud: ``(N, D)`` array. The first three columns are XYZ;
+            additional columns, such as RGB, are kept with each point.
+        voxel_size: Positive voxel edge length in the same units as XYZ.
+        target_num_points: Desired total sampling budget.
+        rng: Optional ``numpy.random.Generator`` for reproducible sampling.
+
+    Returns:
+        A sampled ``(M, D)`` array. The input is not modified.
+    """
+    points = np.asarray(point_cloud)
+    if points.ndim != 2 or points.shape[1] < 3:
+        raise ValueError("point_cloud must have shape (N, D) with D >= 3")
+    if voxel_size <= 0:
+        raise ValueError("voxel_size must be positive")
+    if target_num_points < 0:
+        raise ValueError("target_num_points must be non-negative")
+    if len(points) == 0 or target_num_points == 0:
+        return points[:0].copy()
+
+    rng = np.random.default_rng() if rng is None else rng
+    voxel_indices = np.floor(points[:, :3] / voxel_size).astype(np.int64)
+    _, inverse = np.unique(voxel_indices, axis=0, return_inverse=True)
+    voxel_count = int(inverse.max()) + 1
+    points_per_voxel = int(np.ceil(target_num_points / voxel_count))
+    print(f"[voxel_random_sample] voxel_size={voxel_size}, voxel_count={voxel_count}, points_per_voxel={points_per_voxel}")
+
+    # Sort once by voxel and a random key. The first points in each voxel
+    # are therefore an unbiased sample without repeatedly scanning inverse.
+    random_keys = rng.random(len(inverse))
+    order = np.lexsort((random_keys, inverse))
+    sorted_inverse = inverse[order]
+
+    voxel_starts = np.r_[0, np.flatnonzero(np.diff(sorted_inverse)) + 1]
+    voxel_ends = np.r_[voxel_starts[1:], len(order)]
+    voxel_counts = voxel_ends - voxel_starts
+    sample_counts = np.minimum(voxel_counts, points_per_voxel)
+
+    group_offsets = np.arange(len(order)) - np.repeat(voxel_starts, voxel_counts)
+    selected_mask = group_offsets < np.repeat(sample_counts, voxel_counts)
+    selected = order[selected_mask]
+
+    selected.sort()
+    result = points[selected].copy()
+    return result
+
+
+def two_stage_point_cloud_sample(point_cloud, target_num_points, voxel_size,
+                                 random_ratio = 0.5, rng=None):
+    """Down-sample a point cloud using random and voxel sampling stages.
+
+    First, randomly samples half of ``target_num_points`` from the input.
+    The selected points are removed.  The second half is sampled from the
+    remaining points using :func:`voxel_random_sample`.
+
+    If the input contains fewer points than the target, all points are
+    returned.  For odd targets, the first stage receives the smaller half and
+    the second stage receives the remaining budget.
+
+    Args:
+        point_cloud: ``(N, D)`` array with XYZ in the first three columns.
+        target_num_points: Maximum number of points to return.
+        voxel_size: Positive voxel edge length.
+        rng: Optional ``numpy.random.Generator`` for reproducibility.
+
+    Returns:
+        A sampled ``(M, D)`` array with ``M <= target_num_points``.
+    """
+    points = np.asarray(point_cloud)
+    if points.ndim != 2 or points.shape[1] < 3:
+        raise ValueError("point_cloud must have shape (N, D) with D >= 3")
+    if target_num_points < 0:
+        raise ValueError("target_num_points must be non-negative")
+    if voxel_size <= 0:
+        raise ValueError("voxel_size must be positive")
+    if len(points) == 0 or target_num_points == 0:
+        return points[:0].copy()
+    if len(points) <= target_num_points:
+        return points.copy()
+
+    rng = np.random.default_rng() if rng is None else rng
+    first_stage_target = int(target_num_points * random_ratio)
+    second_stage_target = target_num_points - first_stage_target
+
+    first_indices = rng.choice(
+        len(points), first_stage_target, replace=False
+    )
+
+    selected_mask = np.ones(len(points), dtype=bool)
+    selected_mask[first_indices] = False
+    remaining = points[selected_mask]
+
+    second_stage = voxel_random_sample(
+        remaining,
+        voxel_size=voxel_size,
+        target_num_points=second_stage_target,
+        rng=rng,
+    )
+    result = np.concatenate([points[first_indices], second_stage], axis=0)
+
+    # The per-voxel rule can exceed its requested budget. Enforce the public
+    # total-budget contract while retaining both sampling stages.
+    if len(result) > target_num_points:
+        result = result[rng.choice(len(result), target_num_points, replace=False)]
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -376,8 +479,8 @@ def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
 # Undistortion
 # ---------------------------------------------------------------------------
 
-def undistort_camera(name, cam, src_dir, out_dir, balance=0.0,
-                     target_size=None, target_K=None, max_workers=4,
+def undistort_camera(name, cam, src_dir, out_dir,
+                     target_size, target_K, max_workers=4,
                      interp=cv2.INTER_LINEAR,
                      stamps=None, paths=None, names=None):
     """
@@ -398,8 +501,6 @@ def undistort_camera(name, cam, src_dir, out_dir, balance=0.0,
     sample = unicode_imread(paths[0])
     if sample is None:
         raise RuntimeError(f"Cannot read sample image: {paths[0]}")
-    h, w = sample.shape[:2]
-
     K = make_K(cam["intrinsic"])
     D = np.array([
         cam["distortion"]["params"]["k1"],
@@ -408,17 +509,9 @@ def undistort_camera(name, cam, src_dir, out_dir, balance=0.0,
         cam["distortion"]["params"]["k4"],
     ], dtype=np.float64)
 
-    if target_K is not None and target_size is not None:
-        # Fixed pinhole output (e.g. manufacturer-style 1600x1600, fx=fy=800, cx=cy=800)
-        new_K = target_K.copy()
-        new_size = target_size
-    else:
-        # Auto-estimate new camera matrix
-        new_K = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-            K, D, (w, h), np.eye(3), balance=balance
-        )
-        new_size = (w, h)
-        print(f"[{name}] auto undistort: balance={balance}, new_K={new_K}, new_size={new_size}")
+    # Use calibration.json intrinsics and image size as the output target.
+    new_K = target_K.copy()
+    new_size = target_size
 
     map1, map2 = cv2.fisheye.initUndistortRectifyMap(
         K, D, np.eye(3), new_K, new_size, cv2.CV_16SC2
@@ -554,18 +647,13 @@ def build_camera_pose(R_wi, t_wi, R_il, t_il, R_lc, t_lc):
     return R_wc, t_wc
 
 
-def process_point_cloud(las_path, out_ply, num_points=500000,
-                        camera_centers=None, keep_radius=0.0, inside_ratio=0.85):
-    """Load .las, down-sample, estimate normals, write PLY with nx ny nz rgb.
+def process_point_cloud(las_path, out_ply, voxel_size=1.0, random_ratio=0.6,
+                        target_num_points=50000):
+    """Load, sample, normal-estimate, and write a colored LAS point cloud.
 
-    Down-sampling strategies:
-    - keep_radius <= 0 or no camera centers: uniform random sampling to
-      num_points (legacy behavior).
-    - keep_radius > 0 with camera centers: two-tier camera-distance sampling.
-      Points within keep_radius of any camera center share
-      num_points * inside_ratio of the budget, farther points share the rest.
-      This preserves sparse subject points (e.g. car body with glass/metal)
-      while aggressively thinning the background.
+    Sampling uses ``two_stage_point_cloud_sample``: half of the target points
+    are selected uniformly at random, and the other half are selected from the
+    remaining points using per-voxel random sampling.
     """
     print(f"[point cloud] reading {las_path}")
     las = laspy.read(las_path)
@@ -591,37 +679,30 @@ def process_point_cloud(las_path, out_ply, num_points=500000,
         has_color = True
 
     n_total = len(pts)
-    print(f"[point cloud] total points: {n_total}, target down-sample: {num_points}")
-    if num_points > 0 and n_total > num_points:
-        use_tiers = (keep_radius > 0
-                     and camera_centers is not None
-                     and len(camera_centers) > 0)
+    print(f"[point cloud] total points: {n_total}, "
+          f"target down-sample: {target_num_points}, voxel_size: {voxel_size}")
+    if n_total > target_num_points:
         rng = np.random.default_rng(42)
-        if use_tiers:
-            camera_centers = np.asarray(camera_centers, dtype=np.float64)
-            d, _ = cKDTree(camera_centers).query(pts, k=1)
-            inside_mask = d <= keep_radius
-            n_in = int(inside_mask.sum())
-            in_budget = min(n_in, int(round(num_points * inside_ratio)))
-            out_budget = num_points - in_budget
-            print(f"[point cloud] two-tier downsample (keep_radius={keep_radius}m, "
-                  f"inside_ratio={inside_ratio}): total {n_total} -> "
-                  f"inside {in_budget}/{n_in} + outside {out_budget}/{n_total - n_in}")
-            idx_in = np.flatnonzero(inside_mask)
-            idx_out = np.flatnonzero(~inside_mask)
-            if len(idx_in) > in_budget:
-                idx_in = rng.choice(idx_in, in_budget, replace=False)
-            if len(idx_out) > out_budget:
-                idx_out = rng.choice(idx_out, out_budget, replace=False) \
-                    if out_budget > 0 else idx_out[:0]
-            keep = np.concatenate([idx_in, idx_out])
-        else:
-            print(f"[point cloud] downsampling {n_total} -> {num_points} (uniform random)")
-            keep = rng.choice(n_total, num_points, replace=False)
-        keep.sort()
-        pts = pts[keep]
         if has_color:
-            colors = colors[keep]
+            point_data = np.concatenate([pts, colors], axis=1)
+            sampled = two_stage_point_cloud_sample(
+                point_data,
+                target_num_points=target_num_points,
+                voxel_size=voxel_size,
+                random_ratio=random_ratio,
+                rng=rng,
+            )
+            pts = sampled[:, :3]
+            colors = sampled[:, 3:]
+        else:
+            pts = two_stage_point_cloud_sample(
+                pts,
+                target_num_points=target_num_points,
+                voxel_size=voxel_size,
+                random_ratio=random_ratio,
+                rng=rng,
+            )
+        print(f"[point cloud] two-stage downsample: {n_total} -> {len(pts)}")
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(pts)
@@ -710,24 +791,6 @@ def main():
                         help="input data directory")
     parser.add_argument("--output_dir", type=str, required=True,
                         help="output COLMAP directory")
-    parser.add_argument("--undistort_mode", choices=["auto", "fixed"], default="fixed",
-                        help="compatibility option; always use calibration.json intrinsics "
-                             "and image size as the undistortion target")
-    parser.add_argument("--balance", type=float, default=0.0,
-                        help="OpenCV fisheye balance, only used in auto mode "
-                             "(0=crop to valid region, 1=keep all pixels; default 0.0)")
-    parser.add_argument("--target_width", type=int, default=2800,
-                        help="legacy option; image width is read from calibration.json")
-    parser.add_argument("--target_height", type=int, default=2800,
-                        help="legacy option; image height is read from calibration.json")
-    parser.add_argument("--target_fx", type=float, default=790.0,
-                        help="legacy option; focal length is read from calibration.json")
-    parser.add_argument("--target_fy", type=float, default=790.0,
-                        help="legacy option; focal length is read from calibration.json")
-    parser.add_argument("--target_cx", type=float, default=1400.0,
-                        help="legacy option; principal point is read from calibration.json")
-    parser.add_argument("--target_cy", type=float, default=1400.0,
-                        help="legacy option; principal point is read from calibration.json")
     parser.add_argument("--align_mode", type=str, default="none",
                         choices=["mean", "start", "end", "none"],
                         help="how to align image and odom timestamps. "
@@ -746,17 +809,11 @@ def main():
                              "Use 'x180' to match the manufacturer's transforms.json / 3DGS convention "
                              "(Y up, Z back), which is rotated 180 degrees around X relative to COLMAP.")
     parser.add_argument("--num_points", type=int, default=500000,
-                        help="target number of points in down-sampled point cloud")
-    parser.add_argument("--random_ratio", type=float, default=0.5,
-                        help="ratio of points to sample randomly before voxel-based sampling")
-    parser.add_argument("--keep_radius", type=float, default=5.0,
-                        help="if > 0, points within this distance (m) of any camera "
-                             "center share --inside_ratio of the num_points budget "
-                             "(two-tier sampling that preserves the subject); "
-                             "0 disables it (uniform random sampling)")
-    parser.add_argument("--inside_ratio", type=float, default=0.85,
-                        help="fraction of num_points budget assigned to points "
-                             "within keep_radius of camera centers (default: 0.85)")
+                        help="target number of points in the two-stage down-sampling")
+    parser.add_argument("--voxel_size", type=float, default=0.5,
+                        help="voxel edge length for the second sampling stage")
+    parser.add_argument("--random_ratio", type=float, default=0.6,
+                        help="fraction of points sampled uniformly at random in the first stage")
     parser.add_argument("--fmt", choices=["txt", "bin", "both"], default="txt",
                         help="COLMAP sparse model output format (default: bin)")
     parser.add_argument("--max_workers", type=int, default=0,
@@ -902,7 +959,7 @@ def main():
         else:
             intrinsic, stamps, names = undistort_camera(
                 name, cam, src_dir, out_img_dir,
-                balance=args.balance, target_size=target_size,
+                target_size=target_size,
                 target_K=target_K, max_workers=actual_workers,
                 interp=interp,
                 stamps=stamps, paths=paths, names=names
@@ -936,8 +993,6 @@ def main():
     images_bin = {}
     image_id = 1
     skipped = 0
-    camera_centers = []
-
     for cam_id, name, img_stamp, img_name, rel_path in sorted(image_records, key=lambda x: (x[2], x[0])):
         t_query = img_stamp - offset  # map image time into odom clock
 
@@ -955,11 +1010,6 @@ def main():
 
         # world -> camera
         R_wc, t_wc = build_camera_pose(R_wi, t_wi, R_il, t_il, R_lc, t_lc)
-        # The translation in X_cam = R_wc @ X_world + t_wc is not the
-        # camera position. Convert it to the camera center in world coords.
-        camera_center_world = -R_wc.T @ t_wc
-        print(f"camera center: {camera_center_world}, t_wc:\n{t_wc}")
-        camera_centers.append(camera_center_world)
         R_wc, t_wc = align_to_colmap_axis(R_wc, t_wc, args.axis_align)
         R_cw, t_cw = invert_pose(R_wc, t_wc)
         qvec, tvec = pose_to_colmap_qt(R_cw, t_cw)
@@ -987,9 +1037,12 @@ def main():
         las_path = os.path.join(data_dir, "colorized-realtime.las")
         points3D_ply = os.path.join(sparse_dir, "points3D.ply")
         points3D_pcd = process_point_cloud(
-            las_path, points3D_ply, num_points=args.num_points,
-            camera_centers=np.array(camera_centers) if camera_centers else None,
-            keep_radius=args.keep_radius, inside_ratio=args.inside_ratio)
+            las_path,
+            points3D_ply,
+            voxel_size=args.voxel_size,
+            random_ratio=args.random_ratio,
+            target_num_points=args.num_points,
+        )
     timer.finish()
 
     timer.start("write COLMAP model")
