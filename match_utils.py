@@ -379,10 +379,16 @@ def compute_adaptive_voxel_size(poses, min_size=0.05, max_size=1.0):
     return float(np.clip(voxel_size, min_size, max_size))
 
 
-def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel_size=None, max_angle=70, min_overlap=0.1):
-
-    # 读取 COLMAP 数据
-    cameras, poses, points3D = read_model(pose_prior_path)
+def compute_matched_image_pairs_by_pose_prior(
+    cameras,
+    poses,
+    points3D,
+    output_txt,
+    voxel_size=None,
+    max_angle=70,
+    min_overlap=0.1,
+    max_points=1,
+):
 
     # 未显式指定 voxel size 时，基于相机间距自适应计算
     if voxel_size is None:
@@ -393,7 +399,6 @@ def compute_matched_image_pairs_by_pose_prior(pose_prior_path, output_txt, voxel
     points3D_xyz = np.array([point.xyz for point in points3D.values()])
 
     # 构建体素前，将点云随机下采样至 10w 个点，避免点数过多导致体素计算开销过大
-    max_points = 10
     if len(points3D_xyz) > max_points:
         rng = np.random.default_rng(42)
         sample_idx = rng.choice(len(points3D_xyz), max_points, replace=False)

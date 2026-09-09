@@ -8,6 +8,7 @@
 
 import argparse
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import cv2
@@ -110,6 +111,78 @@ def crop_images(input_dir, output_dir, crop_width, crop_height, extensions=None)
             print(f"  Processed {processed}/{len(images)}")
 
     print(f"Done. Cropped {processed} images, failed {failed}. Output: {output_dir}")
+    return {"processed": processed, "failed": failed, "total": len(images)}
+
+
+def crop_images_inplace(input_dir, crop_width, crop_height, extensions=None,
+                        max_workers=None):
+    """Crop all images and atomically replace each original file in place.
+
+    A temporary file is created beside the original image first.  The original
+    is replaced only after OpenCV successfully encodes the cropped image.
+    """
+    input_dir = Path(input_dir)
+
+    if crop_width <= 0 or crop_height <= 0:
+        raise ValueError("crop_width and crop_height must be positive integers")
+
+    if not input_dir.is_dir():
+        raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
+
+    images = find_images(input_dir, extensions)
+    if not images:
+        print(f"No images found in: {input_dir}")
+        return {"processed": 0, "failed": 0, "total": 0}
+
+    print(f"Found {len(images)} images")
+    def process_one(img_path):
+        img = read_image_unicode(img_path)
+        if img is None:
+            return False, f"Cannot read image: {img_path}"
+
+        cropped = crop_center(img, crop_width, crop_height)
+        extension = img_path.suffix or ".png"
+        success, encoded = cv2.imencode(extension, cropped)
+        if not success:
+            return False, f"Failed to encode: {img_path}"
+
+        temp_path = img_path.with_name(f".{img_path.name}.crop.tmp{extension}")
+        try:
+            temp_path.write_bytes(encoded.tobytes())
+            os.replace(temp_path, img_path)
+        except OSError as error:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return False, f"Failed to replace {img_path}: {error}"
+
+        return True, None
+
+    processed = 0
+    failed = 0
+    worker_count = max_workers or min(32, (os.cpu_count() or 1) - 4)
+    worker_count = max(1, worker_count)  # Ensure at least one worker
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {executor.submit(process_one, img_path): img_path for img_path in images}
+        for future in as_completed(futures):
+            img_path = futures[future]
+            try:
+                succeeded, error_message = future.result()
+            except Exception as error:
+                succeeded = False
+                error_message = f"Unexpected failure for {img_path}: {error}"
+
+            if not succeeded:
+                print(f"  [WARN] {error_message}")
+                failed += 1
+                continue
+
+            processed += 1
+            if processed % 100 == 0:
+                print(f"  Processed {processed}/{len(images)}")
+
+    print(f"Done. Cropped in place {processed} images, failed {failed}. Input: {input_dir}")
     return {"processed": processed, "failed": failed, "total": len(images)}
 
 

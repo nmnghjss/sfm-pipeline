@@ -12,7 +12,7 @@ import os
 import numpy as np
 from typing import Any, Dict, List, Optional
 
-from read_write_model import Camera
+from read_write_model import Camera, Image
 
 
 def load_calibration(
@@ -301,8 +301,8 @@ def build_prior_cameras_from_calibration(
     Returns:
         (prior_cameras, prior_images) 二元组：
         - prior_cameras: dict {camera_id: Camera}，与 read_write_model.Camera 结构一致；
-        - prior_images: list[tuple]，每个元素为 (image_id, image_path, camera_id)，
-          其中 image_id 从 1 开始递增。
+                - prior_images: dict[int, Image]，与 read_model() 返回结构一致，
+                    其中 image_id 从 1 开始递增。
         当 calibration.json 不存在、无相机条目或无法构建任何相机时返回 None。
     """
     if logger is None:
@@ -346,14 +346,23 @@ def build_prior_cameras_from_calibration(
         return None
 
     # 为每张图像分配相机（按子目录名匹配 left/right）
-    # 返回 (image_id, image_path, camera_id) 元组列表，image_id 从 1 开始递增
-    prior_images: List[tuple] = []
+    # 返回 {image_id: Image}，与 read_model() 返回结构保持一致。
+    prior_images: Dict[int, Image] = {}
     for img_idx, img_path in enumerate(images_full_path):
         rel_path = os.path.relpath(img_path, images_dir).replace('\\', '/')
         subfolder = rel_path.split('/')[0].lower()
         cam_id = cam_name_to_id.get(subfolder)
         if cam_id is not None:
-            prior_images.append((img_idx + 1, rel_path, cam_id))
+            image_id = img_idx + 1
+            prior_images[image_id] = Image(
+                id=image_id,
+                qvec=np.array([1.0, 0.0, 0.0, 0.0]),
+                tvec=np.zeros(3, dtype=np.float64),
+                camera_id=cam_id,
+                name=rel_path,
+                xys=np.zeros((0, 2), dtype=np.float64),
+                point3D_ids=np.zeros(0, dtype=np.int64),
+            )
         else:
             logger.warning(f"Image {rel_path} has no matching camera in calibration")
 

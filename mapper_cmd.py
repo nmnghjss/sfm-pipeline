@@ -216,8 +216,9 @@ def get_global_mapper_cmd(colmap_command: str,
                    refine_focal_length: int = 1,
                    refine_principal_point: int = 1,
                    refine_extra_params: int = 1,
-                   final_min_num_points3D: int = 3,
-                   final_min_num_covisible_images: int = 3):
+                   final_min_num_points3D: int = 0,
+                   final_min_num_covisible_images: int = 0,
+                   remove_small_connected_components: int = 0):
 
     mapper_cmd = [
         colmap_command, "global_mapper",
@@ -274,6 +275,7 @@ def get_global_mapper_cmd(colmap_command: str,
         "--GlobalMapper.min_tri_angle_deg", str(globalMapper_min_tri_angle_deg), #1
         "--GlobalMapper.min_num_points3D", str(final_min_num_points3D),
         "--GlobalMapper.min_num_covisible_images", str(final_min_num_covisible_images),
+        "--GlobalMapper.remove_small_connected_components", str(remove_small_connected_components)
     ]
     return mapper_cmd
 

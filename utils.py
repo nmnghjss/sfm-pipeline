@@ -688,6 +688,9 @@ def move_files(input_dir: str, output_dir: str, overwrite: bool = False, logger:
         src_path = os.path.join(input_dir, filename)
         dst_path = os.path.join(output_dir, filename)
 
+        if os.path.isdir(src_path):
+            continue  # 只处理文件，跳过子文件夹
+
         # 处理同名文件冲突
         if os.path.exists(dst_path):
             if not overwrite:

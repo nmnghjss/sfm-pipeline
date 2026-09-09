@@ -292,8 +292,8 @@ def match_features_with_lightglue(
                 # Buffer matches for batch write
                 matches_to_write.append((image_id0, image_id1, matches))
                 match_list_pairs.append((img_name0, img_name1))
-            else:
-                logger.info(f"Pair ({img_name0}, {img_name1}) has only {len(matches)} matches, skipping")
+            # else:
+            #     logger.info(f"Pair ({img_name0}, {img_name1}) has only {len(matches)} matches, skipping")
                 
         except Exception as e:
             logger.warning(f"Failed to match {img_name0} and {img_name1}: {e}")

@@ -71,7 +71,7 @@ def get_feature_extractor_cmd(colmap_command: str,
         # "--SiftExtraction.dsp_max_scale", "3",
         # "--SiftExtraction.dsp_num_scales", "10",
         "--AlikedExtraction.max_num_features", str(max_feature_num),
-        "--AlikedExtraction.min_score", "0.2", # 0.2
+        "--AlikedExtraction.min_score", "0.3", # 0.2
         "--AlikedExtraction.n16rot_model_path", aliked_n16rot_path,
         "--AlikedExtraction.n32_model_path", aliked_n32_path,
         "--LomaExtraction.max_num_features", str(max_feature_num),

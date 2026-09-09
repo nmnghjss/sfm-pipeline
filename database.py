@@ -590,10 +590,10 @@ def initialize_colmap_database(
         prior_cameras: Optional dict of COLMAP Camera objects (id -> Camera).
             If provided, these cameras are registered directly and take priority
             over ``camera_model`` / ``camera_assignment``.
-        prior_images: Optional list of tuples ``(image_id, image_path, camera_id)``.
-            When provided, images are written directly from this list (ignoring
-            ``input_images_path``), keeping the DB image_id and camera_id identical
-            to the prior model.
+        prior_images: Optional dict mapping image IDs to COLMAP ``Image`` objects.
+            When provided, images are written directly from this dictionary
+            (ignoring ``input_images_path``), keeping the DB image_id and
+            camera_id identical to the prior model.
         logger: Optional logger instance
 
     Returns:
@@ -696,11 +696,11 @@ def initialize_colmap_database(
 
             # 当 prior_images 非空时，忽略 input_images_path，
             # 直接将 prior_images 中的图像写入数据库。
-            # 每个元素为 (image_id, image_path, camera_id)，
-            # 保持数据库中的 image_id / camera_id 与先验模型一致。
-
-            for (img_id, img_name, cam_id) in prior_images:
-                img_name = img_name.replace('\\', '/')
+            # prior_images uses the standard COLMAP {image_id: Image} shape.
+            for image in prior_images.values():
+                img_id = image.id
+                img_name = image.name.replace('\\', '/')
+                cam_id = image.camera_id
                 if cam_id not in prior_cameras:
                     logger.warning(f"Image {img_name}: prior camera id {cam_id} not in prior cameras, skipping")
                     continue

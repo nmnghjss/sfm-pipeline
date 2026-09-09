@@ -36,9 +36,9 @@ from visualization import visualize_image_pairs, draw_keypoints_on_image
 from calibration_utils import build_prior_cameras_from_calibration
 
 from match_utils import compute_matched_image_pairs_by_pose_prior
+from prior_utils import filter_and_reindex_prior_data
 from database import initialize_colmap_database, initialize_colmap_database_from_prior_camera_file
 from feature_extractor_cmd import get_feature_extractor_cmd
-from feature_extractor_external import extract_neural_features
 from match_cmd import (
     get_exhaustive_matcher_cmd,
     get_spatial_matcher_cmd,
@@ -46,16 +46,15 @@ from match_cmd import (
     get_sequential_match_list,
     get_vocab_tree_matcher_cmd
 )
-from match_external import match_features_with_lightglue
 from read_write_model import (
     read_cameras_binary,
     read_images_binary,
     write_cameras_binary,
     write_cameras_text,
-    write_images_binary,
+    read_model,
 )
 from script.convert_colmap_to_json import convert_colmap_to_prior_json
-from script.crop_images import crop_images
+from script.crop_images import crop_images_inplace
 #  ========================== Argument parser ==========================
 parser = ArgumentParser("Colmap converter")
 parser.add_argument("--no_gpu", action='store_true')
@@ -64,7 +63,7 @@ parser.add_argument("--ba_global_backend", default="CERES", type=str, choices=["
 parser.add_argument("--source_path", "-s", default="E:\\debug", type=str)
 parser.add_argument("--image_dir", "-id", default="input", type=str, help="Path to the directory containing images")
 parser.add_argument("--pos_file", "-pf", default="", type=str, help="Path to gps or cartesian pose file (if available)")
-parser.add_argument("--output_path", "-o", default="output-debug", type=str)
+parser.add_argument("--output_path", "-o", default="", type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
 parser.add_argument("--default_focal_length_factor", default=1.2, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
 parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
@@ -77,17 +76,17 @@ parser.add_argument("--init_camera", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="SIFT_BRUTEFORCE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_alg", "-ma", type=str, default="ALIKED_LIGHTGLUE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=3000, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=2000, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--anms_selected_num", "-asn", default=-1, type=int, help="Maximum number of features to retain per image after final selection")
 parser.add_argument("--cell_num", "-cn", default=-1, type=int, help="Number of cells for ANMS feature selection")
 parser.add_argument("--per_cell_num", "-pcn", default=-1, type=int, help="Number of features to retain per cell for ANMS feature selection")
-parser.add_argument("--sift_peak_threshold", "-spt", default=0.02, type=float, help="SIFT peak threshold for feature extraction")
+parser.add_argument("--sift_peak_threshold", "-spt", default=0.04, type=float, help="SIFT peak threshold for feature extraction")
 parser.add_argument("--sift_first_octave", "-sfo", default=0, type=int, help="SIFT first octave for feature extraction")
 parser.add_argument("--sift_match_max_distance", "-smmd", default=0.7, type=float, help="SIFT match max distance for feature matching")
 parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.7, type=float, help="SIFT match max ratio for feature matching")
@@ -104,13 +103,11 @@ parser.add_argument("--filt_match", type=int, default=0, help="Whether to filter
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.2, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=15, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--ra_max_rotation_error_deg", type=float, default=10.0, help="Maximum rotation error in degrees for rotation averaging")
-parser.add_argument("--ra_max_rotation_error_final_deg", type=float, default=10.0, help="Maximum rotation error in degrees for final rotation averaging")
-parser.add_argument("--ra_refilt_outlier_pairs_num", type=int, default=10, help="Number of outlier pairs to re-filter in rotation averaging")
 parser.add_argument("--gp_max_num_iterations", type=int, default=200, help="Maximum number of iterations for global positioning")
 parser.add_argument("--ba_ceres_max_num_iterations", type=int, default=200, help="Maximum number of iterations for Ceres bundle adjustment")
 parser.add_argument("--max_normalized_reproj_error", type=float, default=0.01, help="Maximum normalized reprojection error")
 parser.add_argument("--global_mapper_min_tri_angle_deg", type=float, default=1.0, help="Minimum triangulation angle in degrees for global mapper")
-parser.add_argument("--track_min_num_views_per_track", type=int, default=4, help="Minimum number of views per track")
+parser.add_argument("--track_min_num_views_per_track", type=int, default=3, help="Minimum number of views per track")
 parser.add_argument("--final_min_num_points3d", type=int, default=3, help="Final minimum number of 3D points")
 parser.add_argument("--final_min_num_covisible_images", type=int, default=3, help="Final minimum number of covisible images")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -122,11 +119,12 @@ parser.add_argument("--external_match", "-em", action="store_true", help="Whethe
 parser.add_argument("--farest_image_distance", "-fid", type=float, default=400.0, help="Maximum distance between images for spatial matching")
 parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
-parser.add_argument("--min_matches_per_image", "-mni", type=int, default=20,
+parser.add_argument("--min_matches_per_image", "-mni", type=int, default=0,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--pose_prior", type=str, default="", help="Path to prior pose file (if available)")
+parser.add_argument("--ref_is_gps", type=int, default=1, choices=[0, 1], help="Type of prior pose file (cartesian or gps)")
 parser.add_argument("--voxel_size", type=float, default=None, help="Voxel size for prior pose-based image pair generation")
 parser.add_argument("--max_angle", type=float, default=120, help="Maximum angle (in degrees) between camera views for prior pose-based image pair generation")
 parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for prior pose-based image pair generation")
@@ -135,7 +133,7 @@ parser.add_argument("--undistort", type=int, default=1, help="Whether to undisto
 parser.add_argument("--unify_output_images", action="store_true")
 parser.add_argument("--monitor_memory", action="store_true", help="Monitor and report peak CPU RAM and GPU VRAM usage of COLMAP processes")
 parser.add_argument("--cropped_width", type=int, default=-1, help="the cropped image width")
-parser.add_argument("--cropper_height", type=int, default=-1, help="the cropper image height")
+parser.add_argument("--cropped_height", type=int, default=-1, help="the cropped image height")
 parser.add_argument("--create_mask", action="store_true", help="Create binary image masks before feature extraction")
 parser.add_argument("--corner_width", type=float, default=0.0, help="Width ratio of each corner mask region, in [0, 1]")
 parser.add_argument("--corner_height", type=float, default=0.0, help="Height ratio of each corner mask region, in [0, 1]")
@@ -359,10 +357,10 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
-    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.1.0\\bin\\colmap.exe"
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.2.0\\bin\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-260826-dev_wl\\colmap.exe"
-    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260819/colmap.exe")
+    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260908/colmap.exe")
     
 else:
     colmap_path = "colmap"
@@ -438,6 +436,9 @@ images_full_path = sorted(images_full_path)
 images_list_path_file = ""
 logger.info(f"Found {len(images_full_path)} images")
 
+## ============= Set max matched image pairs per image for matching ===========
+args.max_matches_per_image = min(args.max_matches_per_image, max(10, input_img_num // 10))
+logger.info(f"Setting max_matches_per_image to {args.max_matches_per_image}")
 # ======================== GPU setup ==========================================
 use_gpu = 0 if args.no_gpu else 1
 
@@ -450,46 +451,55 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
 
     args.pos_file = os.path.join(args.source_path, "pose.json")
     convert_colmap_to_prior_json(args.pose_prior,  args.pos_file, "cartesian")
+    args.ref_is_gps = 0
 
     pre_match_start = time.time()
     logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
 
-    prior_cameras, prior_images = compute_matched_image_pairs_by_pose_prior(
-        args.pose_prior,
-        matched_images_pairs_path,
-        voxel_size=args.voxel_size,
-        max_angle=args.max_angle,
-        min_overlap=args.min_overlap,
-    )
+    prior_cameras, prior_images, prior_points3D = read_model(args.pose_prior)
 
-    # prior_images 为 (image_id, image_path, camera_id) 元组列表，
-    # 此处仅提取路径用于图像过滤
-    prior_images_list = [item[1] for item in prior_images]
-    first_cam = next(iter(prior_cameras.values()))
-    prior_focal_length = first_cam.params[0]
-    prior_focal_factor = prior_focal_length / max(first_cam.width, first_cam.height)
-    logger.info(
-        f"prior-pose-based image pairs saved to: {matched_images_pairs_path}, prior focal length: {prior_focal_length}, prior focal factor: {prior_focal_factor}"
+    prior_focal_length = min(
+        camera.params[0]
+        for camera in prior_cameras.values()
     )
-
+    prior_focal_factor = prior_focal_length / max(
+        camera.width for camera in prior_cameras.values()
+    )
     args.default_focal_length_factor = prior_focal_factor
 
-    # 统一路径分隔符为 "/"
-    prior_images_set = {name.replace('\\', '/') for name in prior_images_list}
+    (
+        images_full_path,
+        prior_cameras,
+        prior_images,
+        images_list_path,
+    ) = filter_and_reindex_prior_data(
+        images_full_path=images_full_path,
+        images_dir=images_dir,
+        prior_cameras=prior_cameras,
+        prior_images=prior_images,
+        logger=logger,
+    )
 
-    # 遍历副本，避免在遍历过程中原地删除导致漏判/漏删
-    images_list_path = []
-    for img_path in list(images_full_path):
-        rel_path = os.path.relpath(img_path, images_dir).replace('\\', '/')
-        if rel_path not in prior_images_set:
-            logger.warning(f"Image {rel_path} does not have prior-pose, please check consistency between prior pose file and input images")
-            images_full_path.remove(img_path)
-        else:
-            images_list_path.append(rel_path)
     images_list_path_file = os.path.join(distorted_sparse_path, "images_list.txt")
     with open(images_list_path_file, 'w') as f:
         for rel_path in images_list_path:
             f.write(f"{rel_path}\n")
+            
+    prior_cameras, matched_prior_images = compute_matched_image_pairs_by_pose_prior(
+        cameras=prior_cameras,
+        poses=prior_images,
+        points3D=prior_points3D,
+        output_txt=matched_images_pairs_path,
+        voxel_size=args.voxel_size,
+        max_angle=args.max_angle,
+        min_overlap=args.min_overlap
+    )
+    if len(matched_prior_images) != len(prior_images):
+        logger.warning(
+            f"Matched prior model returned {len(matched_prior_images)} images, "
+            f"but filtered prior images contain {len(prior_images)} images"
+        )
+
 
     # input("Press Enter to continue with feature extraction and mapping using the prior-pose-based image pairs...")
     pre_match_time = time.time() - pre_match_start
@@ -602,6 +612,7 @@ if args.create_mask:
 image_features = None
 if args.external_feature:
     logger.info("Using external feature extraction...")
+    from feature_extractor_external import extract_neural_features
 
     initialize_colmap_database(
         database_path=database_path,
@@ -675,13 +686,13 @@ if args.pos_file:
 
 # ======================== config Rig =============================================
 # input("Press Enter to continue with feature matching and mapping...")
-config_rig_cmd = [
-    colmap_command, "rig_configurator",
-    "--log_level", str(log_level),
-    "--database_path", database_path,
-    "--rig_config_path", "E:\\M3D_Test_Data\\town\\input\\rig_config.json",
-    "--input_path", "E:\\M3D_Test_Data\\town\\output-sift_0.03_8000_2000-vocab_150_0.7_0.7_filt_0.3_15-global\\distorted\\sparse\\0", # 0.5
-]
+# config_rig_cmd = [
+#     colmap_command, "rig_configurator",
+#     "--log_level", str(log_level),
+#     "--database_path", database_path,
+#     "--rig_config_path", "E:\\M3D_Test_Data\\town\\input\\rig_config.json",
+#     "--input_path", "E:\\M3D_Test_Data\\town\\output-sift_0.03_8000_2000-vocab_150_0.7_0.7_filt_0.3_15-global\\distorted\\sparse\\0", # 0.5
+# ]
 # run_subprocess(config_rig_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
 # input("Press Enter to continue with feature matching and mapping...")
 # ========================= Visualize keypoints (optional) =========================
@@ -709,10 +720,12 @@ if args.visualize_keypoints:
 
 # ========================= Feature matching =========================
 logger.info("Starting feature matching...")
- 
+
 match_start = time.time()
 logger.info("Starting feature matching...")
 if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
+    from match_external import match_features_with_lightglue
+
     # Run LightGlue feature matching
     # args.match_strategy = "threshold"
     logger.info(f"  Match strategy: {args.match_strategy}")
@@ -1048,12 +1061,10 @@ elif args.mapper == "global":
         use_gpu=use_gpu,
         ba_backend=args.ba_global_backend,
         min_num_inliers=min_num_inliers,
-        ba_num_iterations=5, # 3
+        ba_num_iterations=3, # 3
         gp_max_num_iterations=args.gp_max_num_iterations,
         ba_ceres_max_num_iterations=args.ba_ceres_max_num_iterations,
         ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
-        ra_max_rotation_error_final_deg=args.ra_max_rotation_error_final_deg,
-        ra_refilt_outlier_paisrs_num=args.ra_refilt_outlier_pairs_num,
         max_normalized_reproj_error=args.max_normalized_reproj_error,
         globalMapper_min_tri_angle_deg=args.global_mapper_min_tri_angle_deg,
         tri_complete_max_reproj_error=15, #15
@@ -1114,9 +1125,6 @@ elif args.mapper == "pose_prior_incremental":
 elif args.mapper == "pose_prior_global":
     logger.info("Using global mapper with pose prior...")
     max_normalized_reproj_error = args.max_normalized_reproj_error
-    # if prior_focal_length is not None:
-    #     max_normalized_reproj_error = 3 / prior_focal_length
-    #     logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
     mapper_cmd = get_pose_prior_global_mapper_cmd(
         colmap_command=colmap_command,
         log_level=log_level,
@@ -1140,7 +1148,7 @@ elif args.mapper == "pose_prior_global":
         skip_retriangulation=0, # 0        
         ba_skip_joint_optimization_stage=0,
         max_angular_reproj_error_deg=1.0,
-        max_normalized_reproj_error=max_normalized_reproj_error,
+        max_normalized_reproj_error=args.max_normalized_reproj_error,
         ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
         min_tri_angle_deg=args.global_mapper_min_tri_angle_deg,
         tri_complete_max_reproj_error=15, #15
@@ -1206,10 +1214,6 @@ if args.mapper != "pose_prior_incremental":
 else:
     if args.refine_num > 0:
         refine_start = time.time()
-        max_normalized_reproj_error = 0.01
-        if prior_focal_length is not None:
-            # max_normalized_reproj_error = 8 / prior_focal_length
-            logger.info(f"Setting max_normalized_reproj_error to {max_normalized_reproj_error:.4f} based on prior focal length {prior_focal_length:.2f}")
         refine_cmd = get_reconstruction_refine_cmd(colmap_command=colmap_command,
             log_level=log_level,
             database_path=database_path,
@@ -1222,7 +1226,7 @@ else:
             ba_num_iterations=3,
             gp_max_num_iterations=100,
             ba_ceres_max_num_iterations=200,
-            max_normalized_reproj_error=max_normalized_reproj_error,
+            max_normalized_reproj_error=args.max_normalized_reproj_error,
             tri_complete_max_reproj_error= 5.0,
             tri_merge_max_reproj_error= 5.0)
         for it in range(0, args.refine_num):
@@ -1294,32 +1298,23 @@ get_aligned_sparse_model_cmd = get_model_align_cmd(colmap_command,
                     database_path = database_path,
                     input_path = spare_original_path,
                     output_path = spare_aligned_path,
-                    ref_is_gps = 0,
+                    ref_is_gps=args.ref_is_gps,
                     alignment_max_error = 1.0)
 logger.info("Aligning sparse model to prior image positions (if provided) ...")
-run_subprocess(get_aligned_sparse_model_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+aligned_ret = run_subprocess(get_aligned_sparse_model_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+if aligned_ret != 0:
+    logger.warning("Sparse model alignment failed or no prior pose provided, keeping original sparse model")
+    move_files(spare_original_path, spare_aligned_path)
 
 ## ============================crop images =========================
 if args.cropped_width > 0 and args.cropped_height > 0:
     undistorted_images_path = os.path.join(output_path, "images")
-    full_resolution_images_path = os.path.join(output_path, "images-full_resolution")
     if not os.path.isdir(undistorted_images_path):
         raise FileNotFoundError(f"Undistorted image directory not found: {undistorted_images_path}")
-    if os.path.exists(full_resolution_images_path):
-        raise FileExistsError(
-            f"Full-resolution image directory already exists: {full_resolution_images_path}"
-        )
 
-    logger.info(
-        f"Renaming undistorted images: {undistorted_images_path} -> "
-        f"{full_resolution_images_path}"
-    )
-    os.rename(undistorted_images_path, full_resolution_images_path)
-
-    logger.info("Cropping undistorted images to 1600x1600 ...")
-    crop_result = crop_images(
-        input_dir=full_resolution_images_path,
-        output_dir=undistorted_images_path,
+    logger.info(f"Cropping undistorted images to {args.cropped_width}x{args.cropped_height} ...")
+    crop_result = crop_images_inplace(
+        input_dir=undistorted_images_path,
         crop_width=args.cropped_width,
         crop_height=args.cropped_height,
     )
