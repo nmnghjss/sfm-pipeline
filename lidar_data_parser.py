@@ -800,6 +800,9 @@ def main():
                         help="path to odometry CSV (default: <data_dir>/odom-realtime.csv). "
                              "Use the manufacturer's refined odom.csv if you want poses matching "
                              "transforms.json/ImgPose.txt.")
+    parser.add_argument("--las_path", type=str, default=None,
+                        help="path to LAS point cloud, relative to data_dir "
+                            "(default: <data_dir>/colorized.las)")
     parser.add_argument("--mcap_path", type=str, default=None,
                         help="path to data_raw.mcap (default: <data_dir>/data/data_raw.mcap)")
     parser.add_argument("--axis_align", type=str, default="none",
@@ -855,7 +858,10 @@ def main():
     # ------------------------------------------------------------------
     # 2. Odom
     # ------------------------------------------------------------------
-    odom_path = args.odom_path if args.odom_path is not None else os.path.join(data_dir, "odom-realtime.csv")
+    odom_path = (args.odom_path if args.odom_path is not None
+                 else os.path.join(data_dir, "odom-realtime.csv"))
+    if not os.path.isabs(odom_path):
+        odom_path = os.path.join(data_dir, odom_path)
     odom_stamps, odom_xyz, odom_quat = load_odom(odom_path)
     print(f"[odom] {len(odom_stamps)} poses, "
           f"freq={1e9/np.median(np.diff(odom_stamps)):.2f} Hz, "
@@ -1034,7 +1040,10 @@ def main():
     # ------------------------------------------------------------------
     points3D_pcd = None
     if not args.skip_pointcloud:
-        las_path = os.path.join(data_dir, "colorized-realtime.las")
+        las_path = (args.las_path if args.las_path is not None
+                    else os.path.join(data_dir, "colorized-realtime.las"))
+        if not os.path.isabs(las_path):
+            las_path = os.path.join(data_dir, las_path)
         points3D_ply = os.path.join(sparse_dir, "points3D.ply")
         points3D_pcd = process_point_cloud(
             las_path,
