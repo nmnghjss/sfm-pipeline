@@ -50,6 +50,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 from unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
 
 
@@ -150,6 +151,15 @@ def get_camera_list_from_yaml(cam_yaml_text):
         model = model_match.group(1) if model_match else "kb4"
         cams.append((cam_id, model))
     return cams
+
+
+def sort_yaml_content(content: bytes) -> bytes:
+    """Sort YAML mapping keys recursively while preserving sequence order."""
+    parsed = yaml.safe_load(content.decode("utf-8"))
+    sorted_text = yaml.safe_dump(
+        parsed, allow_unicode=True, sort_keys=True, default_flow_style=False
+    )
+    return sorted_text.encode("utf-8")
 
 # ---------------------------------------------------------------------------
 # xbin walking: frames + config files
@@ -485,7 +495,7 @@ def main():
     ap.add_argument("--xbag_script", default=r"utils\extract_xbag.py",
                     help="path to extract_xbag.py (Xbag reader)")
     ap.add_argument("--ffmpeg", default=r"tools\ffmpeg-9.0.1\bin\ffmpeg.exe")
-    ap.add_argument("--jpeg_quality", type=int, default=2, help="ffmpeg -q:v (default 2)")
+    ap.add_argument("--jpeg_quality", type=int, default=1, help="ffmpeg -q:v (default 2)")
     ap.add_argument("--max_frames", type=int, default=0, help="limit frames per camera (0=all)")
     ap.add_argument("--extrinsic_mode", choices=["a", "b"], default="b",
                     help="a: extrinsic yaml = T_lc as-is; b: invert it (default b)")
@@ -536,12 +546,18 @@ def main():
     frames, configs = walk_xbin(xbag_mod, xbin)
     n0 = sum(1 for f in frames if f[0] == 0)
     n1 = sum(1 for f in frames if f[0] == 1)
-    print(f"[xbin] video frames: cam0={n0} cam1={n1}; configs: {sorted(configs)}")
+    n2 = sum(1 for f in frames if f[0] == 2)
+    print(f"[xbin] video frames: cam0={n0} cam1={n1} cam2={n2}; configs: {sorted(configs)}")
 
     cfg_dir = out_dir / "xbin_configs"
     cfg_dir.mkdir(exist_ok=True)
     for name, content in configs.items():
-        (cfg_dir / name).write_bytes(content)
+        output_content = (
+            sort_yaml_content(content)
+            if Path(name).suffix.lower() in {".yaml", ".yml"}
+            else content
+        )
+        (cfg_dir / name).write_bytes(output_content)
 
     cam_yaml = configs["camera.yaml"].decode("utf-8", "replace")
     cams_cfg = parse_camera_yaml(cam_yaml)
@@ -551,7 +567,7 @@ def main():
 
     # ---- 2. decode frames ---------------------------------------------------
     ts_table = []
-    for cam, cam_name in ((2 ,"left"), (1, "right"), (0, "front")):
+    for cam, cam_name in ((1 ,"left"), (2, "right"), (0, "front")): # 图像对应的相机索引，front是 2
         print(f"[decode] cam{cam} -> cameras/{cam_name} ...")
         ts_table += decode_camera_frames(
             frames, cam, ffmpeg, out_dir, out_dir / "cameras" / cam_name,
@@ -565,16 +581,25 @@ def main():
     # ---- 3. calibration.json ------------------------------------------------
     calib = {"cameras": [], "imu": []}
     for cam_idx, cam_name in ((0, "left"), (1, "right"), (2, "front")):
-        cfg = cams_cfg[f"camera_{cam_idx}"]
+        cfg = cams_cfg[f"camera_{cam_idx}"]  # 相机内参front的ID是2，但是
         fx, fy, cx, cy = cfg["intrinsic"]
-        T_lc = build_T_lc(ext_cl, cam1_pose, cam_idx, args.extrinsic_mode, args.cam1_chain)
+        cam_pose = cfg["camera_pose"]
+        T_lc = build_T_lc(ext_cl, cam_pose, cam_idx, args.extrinsic_mode, args.cam1_chain)
+        cam_model = cfg.get("camera_model", "kb4")  # 默认使用 kb4，如果没有指定
+        if cam_model == "kb4":
+            cam_model = "OPENCV_FISHEYE"
+            distortion_model = ("k1", "k2", "k3", "k4")
+        else:
+            cam_model = "OPENCV"
+            distortion_model = ("k1", "k2", "p1", "p2", "k3")
         calib["cameras"].append({
             "name": cam_name,
+            "id": cam_idx,
             "width": cfg["width"],
             "height": cfg["height"],
             "intrinsic": {"fl_x": fx, "fl_y": fy, "cx": cx, "cy": cy},
-            "distortion": {"model": "kb4",
-                           "params": dict(zip(("k1", "k2", "k3", "k4"), cfg["distortion"]))},
+            "distortion": {"model": cam_model,
+                           "params": dict(zip(distortion_model, cfg["distortion"]))},
             "transform_from_lidar": T_lc_to_transform_from_lidar(T_lc),
         })
     with open(out_dir / "info" / "calibration.json", "w") as w:

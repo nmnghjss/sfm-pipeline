@@ -579,15 +579,10 @@ def process_point_cloud(las_path, out_ply, num_points=500000,
         r = np.array(las.red, dtype=np.float64)
         g = np.array(las.green, dtype=np.float64)
         b = np.array(las.blue, dtype=np.float64)
-        if r.max() > 255:
-            r /= 65535.0
-            g /= 65535.0
-            b /= 65535.0
-        else:
-            r /= 255.0
-            g /= 255.0
-            b /= 255.0
+        # Open3D expects colors in [0, 1]; it clamps instead of normalizing,
+        # so raw LAS values (0-255 or 0-65535) must be scaled here.
         colors = np.vstack([r, g, b]).T.astype(np.float64)
+        colors /= 65535.0 if colors.max() > 255 else 255.0
         has_color = True
 
     n_total = len(pts)
@@ -645,7 +640,9 @@ def build_points3D_dict(pcd):
     """Build COLMAP points3D dict from open3d PointCloud (with colors)."""
     xyz = np.asarray(pcd.points, dtype=np.float64)
     if pcd.has_colors():
-        rgb = (np.asarray(pcd.colors) * 255).astype(np.uint8)
+        # Clip before scaling: float -> uint8 casts wrap around (mod 256)
+        # instead of clamping, which would corrupt out-of-range colors.
+        rgb = (np.clip(np.asarray(pcd.colors), 0.0, 1.0) * 255).astype(np.uint8)
     else:
         rgb = np.full((len(xyz), 3), 128, dtype=np.uint8)
 

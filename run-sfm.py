@@ -65,7 +65,7 @@ parser.add_argument("--image_dir", "-id", default="input", type=str, help="Path 
 parser.add_argument("--pos_file", "-pf", default="", type=str, help="Path to gps or cartesian pose file (if available)")
 parser.add_argument("--output_path", "-o", default="", type=str)
 parser.add_argument("--camera", default="OPENCV", type=str)
-parser.add_argument("--default_focal_length_factor", default=1.2, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
+parser.add_argument("--default_focal_length_factor", default=1.0, type=float, help="Default focal length as a factor of image size (if not specified in EXIF)")
 parser.add_argument("--camera_params", default="", type=str, help="Camera parameters for COLMAP")
 parser.add_argument("--prior_camera_file", "-pcf", default="", type=str, help="Path to prior camera intrinsics file (one camera per line: CAMERA_ID, FOLD, MODEL, WIDTH, HEIGHT, PARAMS). When provided, the database is initialized from this file.")
 parser.add_argument("--refine_focal_length", type=int, default=1, help="Whether to refine focal length during bundle adjustment")
@@ -76,17 +76,17 @@ parser.add_argument("--init_camera", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
 parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="SIFT_BRUTEFORCE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_alg", "-ma", type=str, default="ALIKED_LIGHTGLUE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=3000, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=2000, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--anms_selected_num", "-asn", default=-1, type=int, help="Maximum number of features to retain per image after final selection")
 parser.add_argument("--cell_num", "-cn", default=-1, type=int, help="Number of cells for ANMS feature selection")
 parser.add_argument("--per_cell_num", "-pcn", default=-1, type=int, help="Number of features to retain per cell for ANMS feature selection")
-parser.add_argument("--sift_peak_threshold", "-spt", default=0.03, type=float, help="SIFT peak threshold for feature extraction")
+parser.add_argument("--sift_peak_threshold", "-spt", default=0.02, type=float, help="SIFT peak threshold for feature extraction")
 parser.add_argument("--sift_first_octave", "-sfo", default=0, type=int, help="SIFT first octave for feature extraction")
 parser.add_argument("--sift_match_max_distance", "-smmd", default=0.7, type=float, help="SIFT match max distance for feature matching")
 parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.7, type=float, help="SIFT match max ratio for feature matching")
@@ -103,12 +103,14 @@ parser.add_argument("--filt_match", type=int, default=0, help="Whether to filter
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.2, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=15, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--ra_max_rotation_error_deg", type=float, default=10.0, help="Maximum rotation error in degrees for rotation averaging")
+parser.add_argument("--ra_max_rotation_error_final_deg", type=float, default=5.0, help="Maximum rotation error in degrees for final rotation averaging")
+parser.add_argument("--ba_num_iterations", type=int, default=5, help="Number of iterations for bundle adjustment")
 parser.add_argument("--gp_max_num_iterations", type=int, default=200, help="Maximum number of iterations for global positioning")
 parser.add_argument("--ba_ceres_max_num_iterations", type=int, default=200, help="Maximum number of iterations for Ceres bundle adjustment")
 parser.add_argument("--max_normalized_reproj_error", type=float, default=0.01, help="Maximum normalized reprojection error")
 parser.add_argument("--global_mapper_min_tri_angle_deg", type=float, default=1.0, help="Minimum triangulation angle in degrees for global mapper")
-parser.add_argument("--track_min_num_views_per_track", type=int, default=3, help="Minimum number of views per track")
-parser.add_argument("--final_min_num_points3d", type=int, default=3, help="Final minimum number of 3D points")
+parser.add_argument("--track_min_num_views_per_track", type=int, default=4, help="Minimum number of views per track")
+parser.add_argument("--final_min_num_points3D", type=int, default=5, help="Final minimum number of 3D points")
 parser.add_argument("--final_min_num_covisible_images", type=int, default=3, help="Final minimum number of covisible images")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
 parser.add_argument("--visualize_matches", "-vis", action="store_true", help="Whether to visualize matches")
@@ -132,8 +134,8 @@ parser.add_argument("--refine_num", type=int, default=1, help="refine reconstruc
 parser.add_argument("--undistort", type=int, default=1, help="Whether to undistort images after reconstruction")
 parser.add_argument("--unify_output_images", action="store_true")
 parser.add_argument("--monitor_memory", action="store_true", help="Monitor and report peak CPU RAM and GPU VRAM usage of COLMAP processes")
-parser.add_argument("--cropped_width", type=int, default=2000, help="the cropped image width")
-parser.add_argument("--cropped_height", type=int, default=2000, help="the cropped image height")
+parser.add_argument("--cropped_width", type=int, default=-1, help="the cropped image width")
+parser.add_argument("--cropped_height", type=int, default=-1, help="the cropped image height")
 parser.add_argument("--create_mask", action="store_true", help="Create binary image masks before feature extraction")
 parser.add_argument("--corner_width", type=float, default=0.0, help="Width ratio of each corner mask region, in [0, 1]")
 parser.add_argument("--corner_height", type=float, default=0.0, help="Height ratio of each corner mask region, in [0, 1]")
@@ -349,6 +351,8 @@ min_num_inliers = args.min_num_inliers
 min_inlier_ratio = args.min_inlier_ratio
 
 feature_match_type = args.match_alg
+if args.feature_type.startswith("ALIKED"):
+    args.track_min_num_views_per_track = 3
 
 # ===================== Paths and executables ============================================
 os_type = check_operating_system()
@@ -357,10 +361,10 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.2.0\\bin\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-260826-dev_wl\\colmap.exe"
-    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-dev-wl-260908/colmap.exe")
+    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-wl-260920/colmap.exe")
     
 else:
     colmap_path = "colmap"
@@ -437,7 +441,7 @@ images_list_path_file = ""
 logger.info(f"Found {len(images_full_path)} images")
 
 ## ============= Set max matched image pairs per image for matching ===========
-args.max_matches_per_image = min(args.max_matches_per_image, max(10, input_img_num // 10))
+args.max_matches_per_image = min(args.max_matches_per_image, max(20, input_img_num // 5))
 logger.info(f"Setting max_matches_per_image to {args.max_matches_per_image}")
 # ======================== GPU setup ==========================================
 use_gpu = 0 if args.no_gpu else 1
@@ -484,21 +488,22 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     with open(images_list_path_file, 'w') as f:
         for rel_path in images_list_path:
             f.write(f"{rel_path}\n")
+      
             
-    prior_cameras, matched_prior_images = compute_matched_image_pairs_by_pose_prior(
-        cameras=prior_cameras,
-        poses=prior_images,
-        points3D=prior_points3D,
-        output_txt=matched_images_pairs_path,
-        voxel_size=args.voxel_size,
-        max_angle=args.max_angle,
-        min_overlap=args.min_overlap
-    )
-    if len(matched_prior_images) != len(prior_images):
-        logger.warning(
-            f"Matched prior model returned {len(matched_prior_images)} images, "
-            f"but filtered prior images contain {len(prior_images)} images"
-        )
+    # prior_cameras, matched_prior_images = compute_matched_image_pairs_by_pose_prior(
+    #     cameras=prior_cameras,
+    #     poses=prior_images,
+    #     points3D=prior_points3D,
+    #     output_txt=matched_images_pairs_path,
+    #     voxel_size=args.voxel_size,
+    #     max_angle=args.max_angle,
+    #     min_overlap=args.min_overlap
+    # )
+    # if len(matched_prior_images) != len(prior_images):
+    #     logger.warning(
+    #         f"Matched prior model returned {len(matched_prior_images)} images, "
+    #         f"but filtered prior images contain {len(prior_images)} images"
+    #     )
 
 
     # input("Press Enter to continue with feature extraction and mapping using the prior-pose-based image pairs...")
@@ -1061,10 +1066,11 @@ elif args.mapper == "global":
         use_gpu=use_gpu,
         ba_backend=args.ba_global_backend,
         min_num_inliers=min_num_inliers,
-        ba_num_iterations=3, # 3
+        ba_num_iterations=args.ba_num_iterations,
         gp_max_num_iterations=args.gp_max_num_iterations,
         ba_ceres_max_num_iterations=args.ba_ceres_max_num_iterations,
         ra_max_rotation_error_deg=args.ra_max_rotation_error_deg,
+        ra_max_rotation_error_final_deg=args.ra_max_rotation_error_final_deg,
         max_normalized_reproj_error=args.max_normalized_reproj_error,
         globalMapper_min_tri_angle_deg=args.global_mapper_min_tri_angle_deg,
         tri_complete_max_reproj_error=15, #15
@@ -1073,7 +1079,9 @@ elif args.mapper == "global":
         track_min_num_views_per_track=args.track_min_num_views_per_track,
         refine_focal_length=args.refine_focal_length,
         refine_principal_point=args.refine_principal_point,
-        refine_extra_params=args.refine_extra_params    
+        refine_extra_params=args.refine_extra_params,    
+        final_min_num_points3D=args.final_min_num_points3D,
+        final_min_num_covisible_images=args.final_min_num_covisible_images
     )
 elif args.mapper == "pose_prior_incremental":
     logger.info("Using prior-pose-based incremental mapper...")
