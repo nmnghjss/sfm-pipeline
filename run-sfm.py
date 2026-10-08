@@ -104,7 +104,7 @@ parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.2, 
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=15, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--ra_max_rotation_error_deg", type=float, default=10.0, help="Maximum rotation error in degrees for rotation averaging")
 parser.add_argument("--ra_max_rotation_error_final_deg", type=float, default=5.0, help="Maximum rotation error in degrees for final rotation averaging")
-parser.add_argument("--ba_num_iterations", type=int, default=5, help="Number of iterations for bundle adjustment")
+parser.add_argument("--ba_num_iterations", type=int, default=3, help="Number of iterations for bundle adjustment")
 parser.add_argument("--gp_max_num_iterations", type=int, default=200, help="Maximum number of iterations for global positioning")
 parser.add_argument("--ba_ceres_max_num_iterations", type=int, default=200, help="Maximum number of iterations for Ceres bundle adjustment")
 parser.add_argument("--max_normalized_reproj_error", type=float, default=0.01, help="Maximum normalized reprojection error")
@@ -361,10 +361,10 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.2.0\\bin\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-260826-dev_wl\\colmap.exe"
-    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-wl-260920/colmap.exe")
+    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-wl-260924/colmap.exe")
     
 else:
     colmap_path = "colmap"
