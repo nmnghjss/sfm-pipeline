@@ -17,6 +17,8 @@ xgrids_to_pipeline.py
     odom-realtime.csv                poses.csv 时间戳 ×1e9（纳秒）
     colorized-realtime.las           map.las 硬链接/复制
     frames_ts.csv                    每帧时间戳对照（cam, frame_idx, ts_ns）
+    transformed_clouds/              map.las 按 transform 两种方向假设变换后的点云
+                                     (cloud_apply.las / cloud_apply_inv.las)
     validation/                      las 点云 → 鱼眼图投影叠加（外参方向目检）
     step1/                           可选：直接调用 real_time_to_colmap.py 的输出
 
@@ -381,6 +383,83 @@ def T_lc_to_transform_from_lidar(T_lc):
 
 
 # ---------------------------------------------------------------------------
+# point cloud transform (both extrinsic hypotheses)
+# ---------------------------------------------------------------------------
+def apply_transform_to_las(las_path: Path, T: np.ndarray, out_path: Path,
+                           max_points: int = 0) -> int:
+    """读取 las 点云，对每个点做齐次变换 p' = T @ p，另存为新 las（保留颜色/强度等属性）。
+
+    返回写出的点数。max_points > 0 时按等间隔降采样，便于快速目检。
+    """
+    import laspy
+
+    las = laspy.read(str(las_path))
+    n_total = len(las.x)
+    if n_total == 0:
+        raise RuntimeError(f"empty las: {las_path}")
+    stride = 1
+    if max_points and n_total > max_points:
+        stride = int(np.ceil(n_total / float(max_points)))
+    idx = slice(None, None, stride)
+
+    P = np.vstack([las.x, las.y, las.z]).T.astype(np.float64)[idx]
+    P_t = (T[:3, :3] @ P.T).T + T[:3, 3]
+
+    header = laspy.LasHeader(point_format=las.point_format.id,
+                             version=str(las.header.version))
+    header.scales = np.asarray(las.header.scales, dtype=np.float64)
+    header.offsets = P_t.min(axis=0)  # 重新定原点，避免量化精度损失
+    out = laspy.LasData(header)
+    out.x, out.y, out.z = P_t[:, 0], P_t[:, 1], P_t[:, 2]
+    # 其余属性（颜色/强度/分类...）原样搬运；X/Y/Z 已处理，跳过
+    for dim in las.point_format.dimension_names:
+        if dim in ("X", "Y", "Z"):
+            continue
+        try:
+            setattr(out, dim, np.asarray(las[dim])[idx])
+        except Exception:
+            pass
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out.write(str(out_path))
+    return len(P_t)
+
+
+def write_transformed_clouds(las_path: Path, T_ext: np.ndarray, out_dir: Path,
+                             max_points: int = 0):
+    """把 extrinsic_camera_lidar.yaml 的 transform 以两种方向假设分别作用到点云。
+
+    transform 方向无文档，故输出两份结果用于目检/比对：
+      cloud_apply.las     假设 transform = T_lidar_to_cam，直接 p' = T @ p
+      cloud_apply_inv.las 假设 transform = T_cam_to_lidar，p' = inv(T) @ p
+    注意：map.las 的坐标是 SLAM 世界系（≈激光系），这里是整体套用外参的粗检。
+    """
+    cloud_dir = out_dir / "transformed_clouds"
+    cloud_dir.mkdir(parents=True, exist_ok=True)
+
+    variants = (
+        ("cloud_apply", T_ext,
+         "p' = transform @ p（假设 yaml transform 是 lidar->camera）"),
+        ("cloud_apply_inv", inv4(T_ext),
+         "p' = inv(transform) @ p（假设 yaml transform 是 camera->lidar）"),
+    )
+    results = {}
+    for tag, T, desc in variants:
+        out_path = cloud_dir / f"{tag}.las"
+        n = apply_transform_to_las(las_path, T, out_path, max_points=max_points)
+        results[tag] = dict(file=str(out_path), points=n,
+                            description=desc, matrix=T.tolist())
+        print(f"[transform] {tag}: {n} pts -> {out_path.name}  ({desc})")
+
+    with open(cloud_dir / "transform_info.json", "w") as w:
+        json.dump(dict(source=str(las_path),
+                       transform_as_read=T_ext.tolist(),
+                       results=results), w, indent=2)
+    results["info"] = str(cloud_dir / "transform_info.json")
+    return results
+
+
+# ---------------------------------------------------------------------------
 # validation: project las points into fisheye frames
 # ---------------------------------------------------------------------------
 def load_poses(poses_csv: Path):
@@ -518,6 +597,8 @@ def main():
                     help="相机系轴向对齐。XGRIDS K1 实测需要 z180（绕光轴 roll 180°），"
                          "否则投影内容上下颠倒（高处点落到图像下半部）")
     ap.add_argument("--num_points", type=int, default=500000)
+    ap.add_argument("--max_transform_points", type=int, default=0,
+                    help="外参变换输出的点云最多保留点数（0=全部，>0 等间隔降采样）")
     ap.add_argument("--keep_radius", type=float, default=5.0)
     args = ap.parse_args()
 
@@ -625,6 +706,11 @@ def main():
             shutil.copy2(str(las_src), str(las_dst))
             print("[las] copied map.las")
 
+    # ---- 4.5 点云按外参变换（transform 方向未定 -> 两种假设各输出一份） -------
+    T_ext = mat4(ext_cl)
+    transformed_clouds = write_transformed_clouds(
+        las_dst, T_ext, out_dir, max_points=args.max_transform_points)
+
     # ---- 5. validation overlays (both extrinsic hypotheses) -----------------
     if args.validate:
         (out_dir / "validation").mkdir(exist_ok=True)
@@ -644,6 +730,7 @@ def main():
         extrinsic_mode=args.extrinsic_mode, cam1_chain=args.cam1_chain,
         calib=cams_cfg,
         extrinsic_camera_lidar=ext_cl,
+        transformed_clouds=transformed_clouds,
     )
     with open(out_dir / "adapter_summary.json", "w") as w:
         json.dump(summary, w, indent=2, default=str)

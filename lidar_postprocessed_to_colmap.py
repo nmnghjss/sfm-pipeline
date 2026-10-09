@@ -199,7 +199,8 @@ def build_images(poses: list[tuple[str, np.ndarray, np.ndarray]], camera_models:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_dir", type=Path, help="Directory containing the three input files")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Output COLMAP project directory")
+    parser.add_argument("--images_dir", type=Path, default="undistorted-images", help="Directory containing the images; defaults to input_dir")
+    parser.add_argument("--output_dir", type=Path, default="output-alg", help="Output COLMAP project directory")
     parser.add_argument("--num-points", type=int, default=500000, help="Maximum output points; 0 keeps all")
     parser.add_argument("--voxel-size", type=float, default=0.5, help="Voxel size in point-cloud units; 0 disables voxel sampling")
     parser.add_argument("--random-ratio", type=float, default=0.6, help="Ratio of target points sampled randomly in the first stage")
@@ -208,12 +209,11 @@ def main() -> None:
     args = parser.parse_args()
 
     input_dir = args.input_dir.resolve()
-    output_dir = (args.output_dir or input_dir / "lidar-post-sparse").resolve()
+    sparse_dir = (args.output_dir / "lidar-post-sparse").resolve()
     cameras = load_calibration(input_dir / "calibration.json")
     poses = parse_pose_file(input_dir / "ImgPose.txt")
     camera_models = make_camera_models(cameras)
     images = build_images(poses, camera_models)
-    sparse_dir = output_dir
     point_cloud = sample_point_cloud(
         input_dir / "colorized.las",
         sparse_dir / "points3D.ply",
