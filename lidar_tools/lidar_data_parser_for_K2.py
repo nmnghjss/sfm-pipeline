@@ -63,6 +63,8 @@ Notes:
 """
 
 import os
+from pathlib import Path
+import sys
 import time
 import argparse
 import json
@@ -77,11 +79,11 @@ import laspy
 from scipy.spatial.transform import Slerp, Rotation as R
 from mcap.reader import make_reader
 from rosbags.typesys import Stores, get_typestore, get_types_from_msg
+
+# 获取当前文件所在目录的上一级目录
+sys.path.append(str(Path(__file__).parent.parent))
+
 from unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
-
-# Default undistortion worker ratio: use 60% of logical CPU cores.
-_DEFAULT_WORKER_RATIO = 0.60
-
 from read_write_model import (
     Camera,
     Image,
@@ -89,6 +91,8 @@ from read_write_model import (
     write_model,
 )
 
+# Default undistortion worker ratio: use 60% of logical CPU cores.
+_DEFAULT_WORKER_RATIO = 0.60
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -102,7 +106,7 @@ def load_calibration(calib_path):
     cams = {}
     for cam in calib["cameras"]:
         name = cam["name"]
-        if name not in ("left", "right"):
+        if name not in ("left", "right", "front"):
             continue
         cams[name] = cam
     return cams, calib.get("imu", [])
@@ -502,21 +506,33 @@ def undistort_camera(name, cam, src_dir, out_dir,
     if sample is None:
         raise RuntimeError(f"Cannot read sample image: {paths[0]}")
     K = make_K(cam["intrinsic"])
-    D = np.array([
-        cam["distortion"]["params"]["k1"],
-        cam["distortion"]["params"]["k2"],
-        cam["distortion"]["params"]["k3"],
-        cam["distortion"]["params"]["k4"],
-    ], dtype=np.float64)
+    camera_model = cam["distortion"]["model"].lower()
+    if camera_model == "opencv_fisheye":
+        D = np.array([
+            cam["distortion"]["params"]["k1"],
+            cam["distortion"]["params"]["k2"],
+            cam["distortion"]["params"]["k3"],
+            cam["distortion"]["params"]["k4"],
+        ], dtype=np.float64)
+    else:
+        D = np.array([
+            cam["distortion"]["params"]["k1"],
+            cam["distortion"]["params"]["k2"],
+            cam["distortion"]["params"]["p1"],
+            cam["distortion"]["params"]["p2"],
+        ], dtype=np.float64)        
 
     # Use calibration.json intrinsics and image size as the output target.
-    new_K = target_K.copy()
-    new_size = target_size
-
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-        K, D, np.eye(3), new_K, new_size, cv2.CV_16SC2
-    )
-    W, H = new_size
+    if camera_model == "opencv_fisheye":
+        map1, map2 = cv2.fisheye.initUndistortRectifyMap(
+            K, D, None, target_K, target_size, cv2.CV_32FC1
+        )
+        W, H = target_size
+    else:
+        map1, map2 = cv2.initUndistortRectifyMap(
+            K, D, None, target_K, target_size, cv2.CV_32FC1
+        )
+        W, H = target_size
 
     def worker(args):
         p, out_name = args
@@ -536,10 +552,10 @@ def undistort_camera(name, cam, src_dir, out_dir,
             fut.result()
 
     intrinsic = {
-        "fl_x": float(new_K[0, 0]),
-        "fl_y": float(new_K[1, 1]),
-        "cx": float(new_K[0, 2]),
-        "cy": float(new_K[1, 2]),
+        "fl_x": float(target_K[0, 0]),
+        "fl_y": float(target_K[1, 1]),
+        "cx": float(target_K[0, 2]),
+        "cy": float(target_K[1, 2]),
         "width": W,
         "height": H,
     }
@@ -822,7 +838,7 @@ def main():
                         default="cubic",
                         help="interpolation used by cv2.remap during undistortion "
                              "(default: lanczos4 for best quality; linear is faster)")
-    parser.add_argument("--skip_extract", action="store_true",
+    parser.add_argument("--extract_mcap", action="store_true",
                         help="skip extracting images from data_raw.mcap "
                              "(assume <output_dir>/cameras/left and right already exist)")
     parser.add_argument("--skip_undistort", action="store_true",
@@ -869,13 +885,13 @@ def main():
     # ------------------------------------------------------------------
     # 3. Extract images from mcap into <output_dir>/cameras/{left,right}
     # ------------------------------------------------------------------
-    cameras_dir = os.path.join(output_dir, "fisheye-images")
+    cameras_dir = os.path.join(data_dir, "cameras")
     mcap_path = args.mcap_path if args.mcap_path is not None else os.path.join(data_dir, "data", "data_raw.mcap")
 
-    if not args.skip_extract:
+    if args.extract_mcap:
         extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time")
     else:
-        print("[extract] skipped (--skip_extract)")
+        print("[extract mcap] skipped")
     timer.finish()
 
     timer.start("filter images by odom range")
@@ -883,14 +899,14 @@ def main():
     # 4. Load raw timestamps, drop frames outside odom range
     # ------------------------------------------------------------------
     raw_records = {}  # name -> (stamps, paths, names)
-    for name in ("left", "right"):
+    for name in ("left", "right", "front"):
         src_dir = os.path.join(cameras_dir, name)
         stamps, paths, names = parse_image_stamps(src_dir)
         raw_records[name] = (stamps, paths, names)
         print(f"[{name}] extracted {len(stamps)} images from mcap")
 
     # Compute offset on raw stamps (default 0)
-    all_raw_stamps = np.concatenate([raw_records[n][0] for n in ("left", "right")])
+    all_raw_stamps = np.concatenate([raw_records[n][0] for n in ("left", "right", "front")])
     offset = compute_time_offset(all_raw_stamps, odom_stamps, mode=args.align_mode)
     print(f"\n[align] image vs odom offset = {offset/1e9:.3f} s "
           f"({offset/1e9/86400:.2f} days), mode={args.align_mode}")
@@ -899,7 +915,7 @@ def main():
 
     # Filter out images that would query outside odom range
     valid_records = {}
-    for name in ("left", "right"):
+    for name in ("left", "right", "front"):
         stamps, paths, names = raw_records[name]
         valid = (stamps - offset >= odom_stamps[0]) & (stamps - offset <= odom_stamps[-1])
         n_dropped = len(stamps) - int(valid.sum())
@@ -916,6 +932,7 @@ def main():
     # ------------------------------------------------------------------
     image_records = []  # (camera_id, camera_name, stamp, image_name, rel_path)
     cameras_bin = {}
+    colmap_camera_ids = {"front": 1, "left": 2, "right": 3}
 
     interp_map = {
         "nearest": cv2.INTER_NEAREST,
@@ -930,7 +947,8 @@ def main():
         actual_workers = args.max_workers
     print(f"[undistort] interpolation={args.undistort_interp}, max_workers={actual_workers}")
 
-    for cam_id, name in enumerate(["left", "right"], start=1):
+    for name in ["left", "right", "front"]:
+        cam_id = colmap_camera_ids[name]
         cam = cams[name]
         src_dir = os.path.join(cameras_dir, name)
         out_img_dir = os.path.join(output_dir, "undistorted-images", name)
@@ -1056,10 +1074,11 @@ def main():
     # 8. Write COLMAP model (text/binary/both)
     # ------------------------------------------------------------------
     points3D = build_points3D_dict(points3D_pcd) if points3D_pcd is not None else {}
+    cameras_sorted = dict(sorted(cameras_bin.items(), key=lambda item: item[0]))
     if args.fmt in ("bin", "both"):
-        write_model(cameras_bin, images_bin, points3D, sparse_dir, ext=".bin")
+        write_model(cameras_sorted, images_bin, points3D, sparse_dir, ext=".bin")
     if args.fmt in ("txt", "both"):
-        write_model(cameras_bin, images_bin, points3D, sparse_dir, ext=".txt")
+        write_model(cameras_sorted, images_bin, points3D, sparse_dir, ext=".txt")
     print(f"[colmap] wrote sparse model format={args.fmt} to {sparse_dir}")
     timer.finish()
 

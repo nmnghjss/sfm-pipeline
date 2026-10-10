@@ -33,7 +33,7 @@ from utils import (
 )
 from database import ReadColmapDatabase, filter_matches_by_inliers, read_all_keypoints, get_matched_image_pairs
 from visualization import visualize_image_pairs, draw_keypoints_on_image
-from calibration_utils import build_prior_cameras_from_calibration
+from lidar_tools.calibration_utils import build_prior_cameras_from_calibration
 
 from match_utils import compute_matched_image_pairs_by_pose_prior
 from prior_utils import filter_and_reindex_prior_data
@@ -109,7 +109,7 @@ parser.add_argument("--gp_max_num_iterations", type=int, default=200, help="Maxi
 parser.add_argument("--ba_ceres_max_num_iterations", type=int, default=200, help="Maximum number of iterations for Ceres bundle adjustment")
 parser.add_argument("--max_normalized_reproj_error", type=float, default=0.01, help="Maximum normalized reprojection error")
 parser.add_argument("--global_mapper_min_tri_angle_deg", type=float, default=1.0, help="Minimum triangulation angle in degrees for global mapper")
-parser.add_argument("--track_min_num_views_per_track", type=int, default=3, help="Minimum number of views per track")
+parser.add_argument("--track_min_num_views_per_track", type=int, default=4, help="Minimum number of views per track")
 parser.add_argument("--final_min_num_points3D", type=int, default=5, help="Final minimum number of 3D points")
 parser.add_argument("--final_min_num_covisible_images", type=int, default=3, help="Final minimum number of covisible images")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -119,7 +119,7 @@ parser.add_argument("--clean", action="store_true", help="Whether to clean the o
 parser.add_argument("--external_feature", "-ef", action="store_true", help="Whether to use external feature extraction instead of COLMAP's built-in methods")
 parser.add_argument("--external_match", "-em", action="store_true", help="Whether to use external feature matcher instead of COLMAP's built-in methods")
 parser.add_argument("--farest_image_distance", "-fid", type=float, default=400.0, help="Maximum distance between images for spatial matching")
-parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=50,
+parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=100,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=0,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
@@ -1346,7 +1346,7 @@ if args.cropped_width > 0 and args.cropped_height > 0:
 ## ========================= replace points3D in aligned sparse dir with prior points3D ===========================
 if args.pose_prior:
     prior_sparse_path = args.pose_prior
-    point_cloud_filenames = ("points3D.bin", "points3D.txt", "points3D.ply")
+    point_cloud_filenames = ("points3D.txt", "points3D.ply")
     for filename in point_cloud_filenames:
         prior_points_path = os.path.join(prior_sparse_path, filename)
         aligned_points_path = os.path.join(spare_aligned_path, filename)

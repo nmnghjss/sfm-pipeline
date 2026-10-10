@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 
 import laspy
 import numpy as np
@@ -26,6 +27,9 @@ import open3d as o3d
 from scipy.spatial.transform import Rotation
 
 from lidar_data_parser import two_stage_point_cloud_sample
+
+# 获取当前文件所在目录的上一级目录
+sys.path.append(str(Path(__file__).parent.parent))
 from read_write_model import Camera, Image, Point3D, write_model
 
 
@@ -150,17 +154,19 @@ def make_camera_models(cameras: dict[str, dict]) -> dict[str, Camera]:
             continue
         camera = cameras[name]
         intrinsic = camera["intrinsic"]
+        width = int(camera["width"])
+        height = int(camera["height"])
         models[name] = Camera(
             id=camera_id,
             model="OPENCV",
-            width=int(camera["width"]),
-            height=int(camera["height"]),
+            width=width,
+            height=height,
             params=np.asarray(
                 [
                     intrinsic["fl_x"],
                     intrinsic["fl_y"],
-                    intrinsic["cx"],
-                    intrinsic["cy"],
+                    width / 2.0, # intrinsic["cx"],
+                    height / 2.0, # intrinsic["cy"],
                     0.0,
                     0.0,
                     0.0,
@@ -183,6 +189,8 @@ def build_images(poses: list[tuple[str, np.ndarray, np.ndarray]], camera_models:
         translation_cw = -rotation_cw @ center
         q_xyzw = Rotation.from_matrix(rotation_cw).as_quat()
         qvec = np.asarray([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
+        # 逆旋转对应的四元数：COLMAP 顺序为 (w, x, y, z)，单位四元数的逆即共轭
+        qvec_inv = np.asarray([qvec[0], -qvec[1], -qvec[2], -qvec[3]])
         image_id = len(images) + 1
         images[image_id] = Image(
             id=image_id,
@@ -199,11 +207,10 @@ def build_images(poses: list[tuple[str, np.ndarray, np.ndarray]], camera_models:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input_dir", type=Path, help="Directory containing the three input files")
-    parser.add_argument("--images_dir", type=Path, default="undistorted-images", help="Directory containing the images; defaults to input_dir")
     parser.add_argument("--output_dir", type=Path, default="output-alg", help="Output COLMAP project directory")
     parser.add_argument("--num-points", type=int, default=500000, help="Maximum output points; 0 keeps all")
     parser.add_argument("--voxel-size", type=float, default=0.5, help="Voxel size in point-cloud units; 0 disables voxel sampling")
-    parser.add_argument("--random-ratio", type=float, default=0.6, help="Ratio of target points sampled randomly in the first stage")
+    parser.add_argument("--random-ratio", type=float, default=1.0, help="Ratio of target points sampled randomly in the first stage")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for the final point sampling")
     parser.add_argument("--format", choices=("bin", "txt", "both"), default="both", dest="model_format")
     args = parser.parse_args()
@@ -212,11 +219,13 @@ def main() -> None:
     sparse_dir = (args.output_dir / "lidar-post-sparse").resolve()
     cameras = load_calibration(input_dir / "calibration.json")
     poses = parse_pose_file(input_dir / "ImgPose.txt")
+    input_points_path = input_dir / "colorized.las"
+    output_points_path = sparse_dir / "points3D.ply"
     camera_models = make_camera_models(cameras)
     images = build_images(poses, camera_models)
     point_cloud = sample_point_cloud(
-        input_dir / "colorized.las",
-        sparse_dir / "points3D.ply",
+        input_points_path,
+        output_points_path,
         args.num_points,
         args.voxel_size,
         args.random_ratio,
