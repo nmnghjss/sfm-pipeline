@@ -6,11 +6,22 @@ between the two clocks is corrected; the clock rate is assumed to be 1:
 
     corrected = source + offset
 
-Two ways to pick that offset:
+Four ways to pick that offset (first match wins, so ``--offset`` overrides ``--align``):
 
+* ``--offset VALUE`` -- use the given constant verbatim (same unit as the source
+  stamps).  Use this when the offset is already known, e.g. measured once with
+  ``--align-frames``.
+* ``--align-frames CLOCK_A_DIR CLOCK_B_DIR`` -- measure it exactly from two stamp
+  sets of the *same* frames: CLOCK_A_DIR named in the source clock, CLOCK_B_DIR in
+  the reference clock.  The per-frame differences are constant when both sides
+  carry the device capture stamp, which makes this the only estimator that does
+  not depend on the two odom files at all.
 * ``--align first`` (default) ``offset = reference_start - source_start`` -- the
   classic behaviour: only the first sample of each file is used, every other
   sample is shifted by the same amount and all remaining columns are preserved.
+  It aligns the two files' *stamps*, which assumes index i of both files is the
+  same instant; the ``Index shift (physical)`` line reports how far that
+  assumption is off.
 * ``--align min-error`` fits the offset on the whole trajectory so that the
   residual trajectory error is minimal, see :func:`compute_offset_min_error`.
 
@@ -36,6 +47,19 @@ def is_number(text: str) -> bool:
         return True
     except ValueError:
         return False
+
+
+def offset_value(text: str) -> float | int:
+    """Parse a ``--offset`` value while keeping integer precision.
+
+    float64 cannot represent nanosecond stamps (~1.8e18) exactly (spacing 256),
+    so an offset written as an integer must stay an ``int``; otherwise the
+    corrected stamps become floats and quantise to a 256 ns grid.
+    """
+    try:
+        return int(text)
+    except ValueError:
+        return float(text)
 
 
 def read_table(path: Path) -> tuple[list[str] | None, list[list[str]]]:
@@ -102,6 +126,10 @@ def correct_timestamps(source: list[float | int], reference: list[float | int]):
 _ALIGN_GRID = 201   # 每轮搜索的候选数
 _ALIGN_CHUNK = 64   # 分批评估候选，限制峰值内存
 _ALIGN_LEVELS = 4   # 几何收缩轮数（每轮把搜索半径缩到当前步长）
+
+# 图像帧名用的扩展名 / 两套帧名差值允许的极差（超过则两目录很可能不是同一批帧）
+_FRAME_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
+_FRAMES_SPREAD_TOL_NS = 1e6
 
 
 def _median(values: list[float]) -> float:
@@ -307,6 +335,56 @@ def compute_offset_min_error(source, reference, source_rows, reference_rows,
     return _round_offset(fitted, source)
 
 
+def _folder_stamps(folder: Path) -> list[int]:
+    """Timestamps parsed from the file names of an extracted-frame folder."""
+    if not folder.is_dir():
+        raise ValueError(f"Not a directory: {folder}")
+    stamps = []
+    for path in sorted(folder.iterdir()):
+        if path.suffix.lower() not in _FRAME_EXTS:
+            continue
+        try:
+            stamps.append(int(path.stem))
+        except ValueError:
+            continue
+    if not stamps:
+        raise ValueError(f"No frame files named as an integer timestamp in {folder}")
+    return sorted(stamps)
+
+
+def offset_from_frames(clock_a_dir: Path, clock_b_dir: Path) -> float:
+    """Exact clock offset measured from two stamp sets of the same frames.
+
+    ``clock_a_dir`` holds frames named in the *source* file's clock and
+    ``clock_b_dir`` the same frames named in the *reference* file's clock.  Both
+    names of one frame differ by the clock offset, so the per-frame differences
+    are a constant when both sides were stamped from the device payload; the
+    median is then an exact offset and the spread says how far to trust it.
+
+    Returns the offset to add to the source stamps, i.e. ``-median(A - B)``.
+    """
+    stamps_a = _folder_stamps(clock_a_dir)
+    stamps_b = _folder_stamps(clock_b_dir)
+    paired = min(len(stamps_a), len(stamps_b))
+    if len(stamps_a) != len(stamps_b):
+        print(f"[frames] 帧数不同（A {len(stamps_a)} vs B {len(stamps_b)}）："
+              f"只配对前 {paired} 帧，请确认两侧是同一批帧")
+    if paired == 0:
+        raise ValueError("One of the frame folders contains no frames")
+
+    unit = 10 ** 9 if abs(stamps_a[0]) > 10 ** 13 else 1
+    diffs = [stamps_a[i] - stamps_b[i] for i in range(paired)]
+    median = _median(diffs)
+    spread = max(diffs) - min(diffs)
+    print(f"[frames] {paired} 对帧：钟A - 钟B 中位数 = {median:.0f} "
+          f"({median / unit:.6f} s)，极差 = {spread / 1e6:.3f} ms")
+    if spread > _FRAMES_SPREAD_TOL_NS:
+        print(f"[warn] 逐帧差值不恒定（极差 > {_FRAMES_SPREAD_TOL_NS / 1e6:.1f} ms）："
+              f"两侧可能不是同一批帧，或某一侧的帧名不是设备采集时刻"
+              f"（例如用了 mcap 的 publish_time）")
+    return -median
+
+
 def format_timestamp(value: float | int) -> str:
     """Integer timestamps verbatim; fractional (seconds) inputs keep 9 decimals."""
     return f"{value:d}" if isinstance(value, int) else f"{value:.9f}"
@@ -323,6 +401,24 @@ def write_csv(path: Path, header: list[str] | None, rows: list[list[str]],
             row = list(row)
             row[0] = format_timestamp(value)
             writer.writerow(row)
+
+
+# --save 不给路径时，图落在 --output 同目录下，用这个固定文件名
+_FIGURE_NAME = "time_stamp_correct_error.png"
+
+
+def resolve_save_path(requested: Path | None, output: Path) -> Path | None:
+    """Figure path for ``--save``: None = no figure, directory = next to --output.
+
+    A bare ``--save`` (or a directory) means "the same directory as the corrected
+    CSV, named ``time_stamp_correct_error.png``", so the figure lands next to the
+    file it describes instead of in the current working directory.
+    """
+    if requested is None:
+        return None
+    if requested.suffix == "" or requested.is_dir():
+        return output.parent / _FIGURE_NAME
+    return requested
 
 
 def visualize(
@@ -510,6 +606,7 @@ def visualize(
 
     plt.tight_layout()
     if save_path is not None:
+        save_path.parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=150)
         print(f"[vis] figure saved to {save_path}")
     if show:
@@ -569,7 +666,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--align",
         choices=("first", "min-error"),
-        default="first",
+        default="min-error",
         help="偏移量取法：first=只用两文件首行（默认，与旧行为一致）；"
              "min-error=用整条轨迹拟合，使校正后的轨迹误差最小",
     )
@@ -582,6 +679,24 @@ def parse_args() -> argparse.Namespace:
              "reference 持续时长|（= 按索引对应可能错多少的上界）",
     )
     parser.add_argument(
+        "--offset",
+        type=offset_value,
+        default=None,
+        metavar="VALUE",
+        help="直接指定常量偏移量（与 source 时间戳同单位；纳秒数据写成整数可保持精确）；"
+             "给出后忽略 --align",
+    )
+    parser.add_argument(
+        "--align-frames",
+        nargs=2,
+        type=Path,
+        default=None,
+        metavar=("CLOCK_A_DIR", "CLOCK_B_DIR"),
+        help="用同一批帧的两套时间戳精确求偏移：CLOCK_A_DIR 的帧名在 source 的钟上"
+             "（如厂商 camera/left），CLOCK_B_DIR 在 reference 的钟上（如抽帧目录）；"
+             "取 -(A-B) 中位数，打印的极差用于判断可信度",
+    )
+    parser.add_argument(
         "--vis",
         action="store_true",
         help="显示 source/reference 轨迹与校正误差（需要 matplotlib）",
@@ -589,8 +704,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--save",
         type=Path,
+        nargs="?",
+        const=Path(),
         default=None,
-        help="把可视化结果保存为图片（例如 vis.png），可与 --vis 同时使用",
+        metavar="PATH",
+        help="把可视化结果保存为图片（例如 vis.png），可与 --vis 同时使用；"
+             f"不带 PATH 时默认存到 --output 所在目录下的 {_FIGURE_NAME}",
     )
     return parser.parse_args()
 
@@ -605,13 +724,24 @@ def main() -> None:
     # 纳秒时间戳（≈1e18）还是秒时间戳（≈1e9），用于换算、搜索与可视化
     per_second = 10 ** 9 if abs(source[0]) > 10 ** 13 else 1
 
-    if args.align == "min-error":
+    if args.offset is not None:
+        offset = args.offset
+        alignment_label = "offset (explicit)"
+        print(f"[align] 使用 --offset 指定值（与 source 同单位）: {offset}")
+    elif args.align_frames is not None:
+        offset = _round_offset(offset_from_frames(*args.align_frames), source)
+        alignment_label = "frames"
+        print(f"[align] 由帧名求得偏移量（与 source 同单位）: {offset}")
+    elif args.align == "min-error":
         offset = compute_offset_min_error(source, reference, source_rows,
                                           reference_rows, per_second,
                                           args.align_window)
+        alignment_label = "min-error"
     else:
         offset = compute_offset(source, reference)
+        alignment_label = "first"
     corrected = shift_timestamps(source, offset)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
     write_csv(args.output, source_header, source_rows, corrected)
 
     source_span = source[-1] - source[0]
@@ -629,10 +759,19 @@ def main() -> None:
     print(f"Header:    reference={'yes' if reference_header else 'no'}, "
           f"source={'yes' if source_header else 'no'}")
     print(f"Output:    {args.output}")
-    print(f"Alignment: {args.align}")
+    print(f"Alignment: {alignment_label}")
     print(f"Offset (constant): {offset}  ({offset / per_second:.6f} s)")
     print(f"Mapping: corrected = source + {offset}  (scale = 1)")
     print(f"Corrected range: {corrected[0]} -> {corrected[-1]}")
+
+    # 同索引物理时刻差：两文件按索引配对后，对应的物理时刻其实差了多少。
+    # 用索引/首行法取偏移时它恒为 0（自证，没有信息量）；只有用独立时钟
+    # （--offset / --align-frames / min-error）时才能看出来，非零就说明
+    # “同索引 = 同一时刻”这个前提不成立，首行法会偏这么多。
+    if alignment_label != "first":
+        index_median = _median([reference[i] - source[i] for i in range(matched)])
+        print(f"Index shift (physical): {(offset - index_median) / per_second:+.6f} s  "
+              f"<- 同索引两样本的物理时刻差；--align first 会偏这么多")
 
     # ---- min-error：与首行取法对比，并给出两种取法的轨迹误差 ------------
     if args.align == "min-error":
@@ -684,9 +823,11 @@ def main() -> None:
         print("[warn] source 时间跨度为 0，跳过 span/rate 自检")
 
     # ---- 可视化（source/reference 轨迹 + 校正误差） --------------------
-    if args.vis or args.save is not None:
+    # --save 没给路径（或给的是目录）时，图与 --output 同目录、同名
+    save_path = resolve_save_path(args.save, args.output)
+    if args.vis or save_path is not None:
         visualize(source, reference, corrected, source_rows, reference_rows,
-                  per_second, args.save, args.vis)
+                  per_second, save_path, args.vis)
 
 
 if __name__ == "__main__":
