@@ -41,6 +41,7 @@ from database import initialize_colmap_database, initialize_colmap_database_from
 from feature_extractor_cmd import get_feature_extractor_cmd
 from match_cmd import (
     get_exhaustive_matcher_cmd,
+    get_sequential_matcher_cmd,
     get_spatial_matcher_cmd,
     get_matches_importer_cmd,
     get_sequential_match_list,
@@ -78,18 +79,18 @@ parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
 parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "sequential_custom", "custom"], help="Matching strategy to use")
 parser.add_argument("--match_alg", "-ma", type=str, default="ALIKED_LIGHTGLUE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
 parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=2000, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--anms_selected_num", "-asn", default=-1, type=int, help="Maximum number of features to retain per image after final selection")
 parser.add_argument("--cell_num", "-cn", default=-1, type=int, help="Number of cells for ANMS feature selection")
 parser.add_argument("--per_cell_num", "-pcn", default=-1, type=int, help="Number of features to retain per cell for ANMS feature selection")
 parser.add_argument("--sift_peak_threshold", "-spt", default=0.01, type=float, help="SIFT peak threshold for feature extraction")
 parser.add_argument("--sift_first_octave", "-sfo", default=0, type=int, help="SIFT first octave for feature extraction")
 parser.add_argument("--sift_match_max_distance", "-smmd", default=0.7, type=float, help="SIFT match max distance for feature matching")
-parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.7, type=float, help="SIFT match max ratio for feature matching")
+parser.add_argument("--sift_match_max_ratio", "-smmr", default=0.6, type=float, help="SIFT match max ratio for feature matching")
 parser.add_argument("--loma_extractor_min_score", type=float, default=0.0, help="Minimum score threshold for LOMA feature extraction")
 parser.add_argument("--loma_extractor_use_bf16", type=int, default=0, help="Whether to use BF16 for LOMA feature extraction")
 parser.add_argument("--loma_extractor_use_fast_resize", type=int, default=0, help="Whether to use fast resize for LOMA feature extraction")
@@ -98,18 +99,27 @@ parser.add_argument("--loma_match_use_bf16", type=int, default=0, help="Whether 
 parser.add_argument("--min_num_inliers", type=int, default=15, help="Minimum number of inliers for a valid match")
 parser.add_argument("--min_inlier_ratio", type=float, default=0.1, help="Minimum inlier ratio for a valid match")
 parser.add_argument("--sequential_overlap", "-so", type=int, default=15, help="Number of neighboring images to match on each side for sequential matching")
-parser.add_argument("--two_view_geometry_max_error", "-tvgme", type=float, default=4.0, help="two viw geometry max error")
+parser.add_argument("--sequential_quadratic_overlap", type=int, default=0, help="Whether to use quadratic overlap for COLMAP built-in sequential matching")
+parser.add_argument("--sequential_expand_rig_images", type=int, default=1, help="Whether to expand rig images for COLMAP built-in sequential matching")
+parser.add_argument("--sequential_loop_detection", type=int, default=1, help="Whether to enable loop detection for COLMAP built-in sequential matching")
+parser.add_argument("--sequential_loop_detection_period", type=int, default=10, help="Loop detection period for COLMAP built-in sequential matching")
+parser.add_argument("--sequential_loop_detection_num_images", type=int, default=50, help="Number of loop detection images for COLMAP built-in sequential matching")
+parser.add_argument("--sequential_loop_detection_num_nearest_neighbors", type=int, default=1, help="Number of nearest neighbors per loop detection image")
+parser.add_argument("--sequential_loop_detection_num_checks", type=int, default=64, help="Number of loop detection checks")
+parser.add_argument("--sequential_loop_detection_num_images_after_verification", type=int, default=0, help="Number of loop detection images after verification")
+parser.add_argument("--sequential_loop_detection_max_num_features", type=int, default=-1, help="Max number of features for loop detection (-1 = all)")
+parser.add_argument("--two_view_geometry_max_error", "-tvgme", type=float, default=3.0, help="two viw geometry max error")
 parser.add_argument("--filt_match", type=int, default=0, help="Whether to filter matches by inliers before mapping")
 parser.add_argument("--filter_inlier_ratio_threshold", type=float, default=0.2, help="Inlier ratio threshold for filtering matches before mapping")
 parser.add_argument("--filter_inlier_num_threshold", type=int, default=15, help="Inlier number threshold for filtering matches before mapping")
 parser.add_argument("--ra_max_rotation_error_deg", type=float, default=10.0, help="Maximum rotation error in degrees for rotation averaging")
-parser.add_argument("--ra_max_rotation_error_final_deg", type=float, default=5.0, help="Maximum rotation error in degrees for final rotation averaging")
+parser.add_argument("--ra_max_rotation_error_final_deg", type=float, default=10.0, help="Maximum rotation error in degrees for final rotation averaging")
 parser.add_argument("--ba_num_iterations", type=int, default=3, help="Number of iterations for bundle adjustment")
 parser.add_argument("--gp_max_num_iterations", type=int, default=200, help="Maximum number of iterations for global positioning")
 parser.add_argument("--ba_ceres_max_num_iterations", type=int, default=200, help="Maximum number of iterations for Ceres bundle adjustment")
 parser.add_argument("--max_normalized_reproj_error", type=float, default=0.01, help="Maximum normalized reprojection error")
 parser.add_argument("--global_mapper_min_tri_angle_deg", type=float, default=1.0, help="Minimum triangulation angle in degrees for global mapper")
-parser.add_argument("--track_min_num_views_per_track", type=int, default=4, help="Minimum number of views per track")
+parser.add_argument("--track_min_num_views_per_track", type=int, default=3, help="Minimum number of views per track")
 parser.add_argument("--final_min_num_points3D", type=int, default=5, help="Final minimum number of 3D points")
 parser.add_argument("--final_min_num_covisible_images", type=int, default=3, help="Final minimum number of covisible images")
 parser.add_argument("--log_level", default="0", type=int, help="Set the logging level")
@@ -330,7 +340,7 @@ fh.setFormatter(log_formatter)
 logger.addHandler(fh)
 
 # =========================== Record parameters to log file ==========================
-# record_args(logger, args)
+record_args(logger, args)
 
 # ============================ Timeing variables ===============================
 start_time = time.time()
@@ -354,6 +364,10 @@ feature_match_type = args.match_alg
 if args.feature_type.startswith("ALIKED"):
     args.track_min_num_views_per_track = 3
 
+if args.match_strategy == "threshold":
+    args.min_matches_per_image = 10
+    args.max_matches_per_image = 50
+
 # ===================== Paths and executables ============================================
 os_type = check_operating_system()
 current_path = resource_path()
@@ -361,10 +375,10 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
-    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.2.0\\bin\\colmap.exe"
+    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.2.1\\bin\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-260826-dev_wl\\colmap.exe"
-    colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-wl-260924/colmap.exe")
+    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-wl-260924/colmap.exe")
     
 else:
     colmap_path = "colmap"
@@ -470,6 +484,18 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
         camera.width for camera in prior_cameras.values()
     )
     args.default_focal_length_factor = prior_focal_factor
+
+    # max_normalized_reproj_error 是归一化相机坐标下的阈值（约等于 像素误差 / 焦距），
+    # 所以 3 / 最大焦距 等价于"3 像素"的重投影误差。
+    max_prior_focal_length = max(
+        camera.params[0]
+        for camera in prior_cameras.values()
+    )
+    args.max_normalized_reproj_error = args.two_view_geometry_max_error / max_prior_focal_length
+    logger.info(
+        f"Setting max_normalized_reproj_error to {args.max_normalized_reproj_error:.6f} "
+        f"(= {args.two_view_geometry_max_error} px / max prior focal length {max_prior_focal_length:.3f} px)"
+    )
 
     (
         images_full_path,
@@ -836,7 +862,7 @@ else:
             two_view_geometry_max_error=args.two_view_geometry_max_error
         )        
 
-    elif args.match_strategy == "sequential":
+    elif args.match_strategy == "sequential_custom":
         # Generate sequential match list with circular overlap
         logger.info("Generating sequential match pairs...")
         
@@ -874,6 +900,48 @@ else:
             g_model_path_bf16=loma_match_g_model_path_bf16,          
             min_num_inliers=min_num_inliers,
             min_inlier_ratio=min_inlier_ratio
+        )
+    elif args.match_strategy == "sequential":
+        # Use COLMAP's built-in sequential_matcher
+        logger.info("Using COLMAP built-in sequential matcher...")
+        feat_matching_cmd = get_sequential_matcher_cmd(
+            colmap_command=colmap_command,
+            log_level=log_level,
+            database_path=database_path,
+            feature_match_type=feature_match_type,
+            use_gpu=use_gpu,
+            max_feature_num=args.max_feature_num,
+            min_num_inliers=min_num_inliers,
+            min_inlier_ratio=min_inlier_ratio,
+            max_distance=args.sift_match_max_distance,
+            max_ratio=args.sift_match_max_ratio,
+            two_view_geometry_max_error=args.two_view_geometry_max_error,
+            sift_lightglue_match_path=sift_lightglue_match_path,
+            bruteforce_match_path=bruteforce_match_path,
+            aliked_lightglue_match_path=aliked_lightglue_match_path,
+            loma_match_min_score=args.loma_match_min_score,
+            loma_match_use_bf16=args.loma_match_use_bf16,
+            b_model_path=loma_match_b_model_path,
+            b_model_path_bf16=loma_match_b_model_path_bf16,
+            b128_model_path=loma_match_b128_model_path,
+            b128_model_path_bf16=loma_match_b128_model_path_bf16,
+            r_model_path=loma_match_r_model_path,
+            r_model_path_bf16=loma_match_r_model_path_bf16,
+            l_model_path=loma_match_l_model_path,
+            l_model_path_bf16=loma_match_l_model_path_bf16,
+            g_model_path=loma_match_g_model_path,
+            g_model_path_bf16=loma_match_g_model_path_bf16,
+            overlap=args.sequential_overlap,
+            quadratic_overlap=args.sequential_quadratic_overlap,
+            expand_rig_images=args.sequential_expand_rig_images,
+            loop_detection=args.sequential_loop_detection,
+            loop_detection_period=args.sequential_loop_detection_period,
+            loop_detection_num_images=args.sequential_loop_detection_num_images,
+            loop_detection_num_nearest_neighbors=args.sequential_loop_detection_num_nearest_neighbors,
+            loop_detection_num_checks=args.sequential_loop_detection_num_checks,
+            loop_detection_num_images_after_verification=args.sequential_loop_detection_num_images_after_verification,
+            loop_detection_max_num_features=args.sequential_loop_detection_max_num_features,
+            vocab_tree_path=vocab_path,
         )
     elif args.match_strategy == "vocab_tree":
         feat_matching_cmd = get_vocab_tree_matcher_cmd(
