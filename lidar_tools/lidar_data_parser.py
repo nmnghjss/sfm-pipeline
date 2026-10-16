@@ -43,20 +43,24 @@ Inputs (under data_dir):
     colorized-realtime.las        colored lidar point cloud
 
 Outputs (under output_dir):
-    cameras/left/*.jpg            extracted left fisheye images, filename = nanosec timestamp
-    cameras/right/*.jpg           extracted right fisheye images, filename = nanosec timestamp
-    images/left/*.jpg             undistorted left images
-    images/right/*.jpg            undistorted right images
-    sparse/0/cameras.txt          two PINHOLE cameras (camera 1 = left, 2 = right)
-    sparse/0/images.txt           image poses (T_camera_to_world for COLMAP)
-    sparse/0/points3D.txt         down-sampled colored point cloud with normals
+    fisheye-images/left/*.jpg     extracted left fisheye images, filename = capture timestamp (ns)
+    fisheye-images/right/*.jpg    extracted right fisheye images, filename = capture timestamp (ns)
+    undistorted-images/left/*.jpg undistorted left images
+    undistorted-images/right/*.jpg undistorted right images
+    lidar-sparse/cameras.*        two OPENCV cameras (camera 1 = left, 2 = right)
+    lidar-sparse/images.*         image poses (T_camera_to_world for COLMAP)
+    lidar-sparse/points3D.ply     down-sampled colored point cloud with normals
 
 Notes:
-    - The script now extracts images from data_raw.mcap using the mcap's local
-      publish_time, so the extracted filenames are already in the same clock as
-      odom-realtime.csv. Images whose timestamp falls outside the odom range
-      (e.g. the first 2 left/right frames that precede the first odom pose)
-      are automatically dropped.
+    - Extracted filenames carry the timestamp the capturing device wrote into the
+      message payload (foxglove_msgs/CompressedImage.timestamp, or the header stamp
+      of sensor_msgs/CompressedImage), i.e. the capture instant, in the same clock
+      as odom-realtime.csv. The MCAP record time is only used as a fallback: it is
+      written by the recorder and lags the capture by the driver's encode/publish
+      latency (measured ~0.15 s on this rig), so naming frames with it shifts every
+      pose by a few centimetres. Images whose timestamp falls outside the odom range
+      (e.g. the first 2 left/right frames that precede the first odom pose) are
+      automatically dropped.
     - The script puts left/right images into separate subdirectories. COLMAP
       image names are stored as "left/xxx.jpg" / "right/xxx.jpg" relative to the
       images/ folder.
@@ -94,6 +98,9 @@ from read_write_model import (
 # Default undistortion worker ratio: use 60% of logical CPU cores.
 _DEFAULT_WORKER_RATIO = 0.60
 
+# Image extensions recognised when scanning or clearing a camera directory.
+_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -115,10 +122,9 @@ def load_calibration(calib_path):
 
 def parse_image_stamps(camera_dir):
     """Return sorted image timestamps (ns) and paths for supported formats."""
-    image_exts = {".jpg", ".jpeg", ".png", ".webp", ".avif"}
     paths = [
         p for p in glob.glob(os.path.join(camera_dir, "*"))
-        if os.path.splitext(p)[1].lower() in image_exts
+        if os.path.splitext(p)[1].lower() in _IMAGE_EXTS
     ]
     stamps, names = [], []
     for p in paths:
@@ -345,11 +351,51 @@ def _deserialize_compressed_image(typestore, message_data, msg_type_key,
     )
 
 
-def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
+def _message_capture_ns(img):
+    """Capture timestamp (ns) carried by a CompressedImage payload, or None.
+
+    foxglove_msgs/CompressedImage -> ``.timestamp``
+    sensor_msgs/CompressedImage   -> ``.header.stamp``
+
+    ROS1 names the fields ``secs``/``nsecs`` while ROS2 uses ``sec``/``nanosec``,
+    so both spellings are accepted.  A zero stamp means "not set" and is treated
+    as missing so the caller can fall back to the MCAP record time.
+    """
+    stamp = getattr(img, "timestamp", None)
+    if stamp is None:
+        header = getattr(img, "header", None)
+        stamp = getattr(header, "stamp", None)
+    if stamp is None:
+        return None
+
+    seconds = getattr(stamp, "sec", None)
+    if seconds is None:
+        seconds = getattr(stamp, "secs", None)
+    nanos = getattr(stamp, "nanosec", None)
+    if nanos is None:
+        nanos = getattr(stamp, "nsecs", None)
+    if seconds is None or nanos is None:
+        return None
+
+    total = int(seconds) * 10 ** 9 + int(nanos)
+    return total or None
+
+
+def extract_images_from_mcap(mcap_path, cameras_dir, fallback_time_field="publish_time"):
     """
     Extract /camera/left/jpeg and /camera/right/jpeg from an mcap file.
     Output layout: <cameras_dir>/<left|right>/<timestamp>.<format>.
     Returns a dict {topic: count}.
+
+    The filename timestamp is the capture instant the device put inside the
+    payload (see :func:`_message_capture_ns`).  ``fallback_time_field`` names the
+    MCAP record field used only when a payload carries no usable stamp; that field
+    is written by the recorder and lags the capture by the driver's publish
+    latency.
+
+    Images already present in a destination directory are removed before writing:
+    changing the stamp source renames every file, and stale frames would otherwise
+    silently double the dataset.
     """
     os.makedirs(cameras_dir, exist_ok=True)
     topic_to_dir = {
@@ -394,6 +440,17 @@ def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
             msg_type_key = _ros_type_key(schema.name)
             out_dir = os.path.join(cameras_dir, topic_to_dir[channel.topic])
             os.makedirs(out_dir, exist_ok=True)
+
+            # This directory is script-owned: drop frames left by an earlier run so
+            # an old naming scheme cannot mix with the new one.
+            stale = [p for p in glob.glob(os.path.join(out_dir, "*"))
+                     if os.path.splitext(p)[1].lower() in _IMAGE_EXTS]
+            for path in stale:
+                os.remove(path)
+            if stale:
+                print(f"  [{channel.topic}] cleared {len(stale)} stale image(s) "
+                      f"from {out_dir}")
+
             image_channels[cid] = {
                 "topic": channel.topic,
                 "msg_type_key": msg_type_key,
@@ -405,6 +462,8 @@ def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
                 "formats": set(),
                 "signatures": set(),
                 "decode_failures": 0,
+                "capture_lags": [],   # record time - capture time, per frame (ns)
+                "missing_capture": 0,
             }
 
         if not image_channels:
@@ -425,9 +484,10 @@ def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
                 continue
             info = image_channels[channel.id]
 
-            ts = getattr(message, time_field)
-            # Do not use the MCAP record timestamp as image content metadata;
-            # this timestamp only controls the output filename.
+            # The MCAP record timestamp comes from the recorder and is only a
+            # fallback; the pose of a frame must be looked up with the instant the
+            # camera itself stamped into the payload.
+            record_ns = int(getattr(message, fallback_time_field))
             typestore = get_typestore(
                 Stores.ROS2_HUMBLE
                 if info["deserialize_kind"] == "CDR/ROS2"
@@ -440,6 +500,13 @@ def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
                 typestore, message.data, info["msg_type_key"],
                 info["message_encoding"]
             )
+            capture_ns = _message_capture_ns(img)
+            if capture_ns is None:
+                ts = record_ns
+                info["missing_capture"] += 1
+            else:
+                ts = capture_ns
+                info["capture_lags"].append(record_ns - capture_ns)
             payload = bytes(img.data)
             fmt = str(img.format)
             signature = _payload_signature(payload)
@@ -473,6 +540,19 @@ def extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time"):
             print(f"  [{info['topic']}] formats={sorted(info['formats'])}, "
                   f"payload_signatures={sorted(info['signatures'])}, "
                   f"OpenCV_decode_failures={info['decode_failures']}")
+            lags = info["capture_lags"]
+            if lags:
+                lag_ns = np.asarray(lags, dtype=np.float64)
+                lag_text = (f"median {np.median(lag_ns) / 1e6:+.1f} ms, "
+                            f"range {(lag_ns.max() - lag_ns.min()) / 1e6:.1f} ms")
+            else:
+                lag_text = "n/a"
+            print(f"  [{info['topic']}] stamp source: payload timestamp for "
+                  f"{info['count'] - info['missing_capture']}/{info['count']} frames; "
+                  f"record-capture lag = {lag_text}"
+                  + (f"; fell back to '{fallback_time_field}' for "
+                     f"{info['missing_capture']} frame(s)"
+                     if info["missing_capture"] else ""))
 
     print("[extract] done:")
     for topic, count in counts.items():
@@ -813,9 +893,9 @@ def main():
                              "default 'none' keeps the device/COLMAP OpenCV convention (Y down, Z front). "
                              "Use 'x180' to match the manufacturer's transforms.json / 3DGS convention "
                              "(Y up, Z back), which is rotated 180 degrees around X relative to COLMAP.")
-    parser.add_argument("--num_points", type=int, default=500000,
+    parser.add_argument("--num_points", type=int, default=2000000,
                         help="target number of points in the two-stage down-sampling")
-    parser.add_argument("--voxel_size", type=float, default=0.5,
+    parser.add_argument("--voxel_size", type=float, default=0.1,
                         help="voxel edge length for the second sampling stage")
     parser.add_argument("--random_ratio", type=float, default=1.0,
                         help="fraction of points sampled uniformly at random in the first stage")
@@ -829,7 +909,7 @@ def main():
                              "(default: lanczos4 for best quality; linear is faster)")
     parser.add_argument("--skip_extract", action="store_true",
                         help="skip extracting images from data_raw.mcap "
-                             "(assume <output_dir>/cameras/left and right already exist)")
+                             "(assume <output_dir>/fisheye-images/{left,right} already exist)")
     parser.add_argument("--skip_undistort", action="store_true",
                         help="skip undistortion (assume images/{left,right}/ already populated)")
     parser.add_argument("--skip_pointcloud", action="store_true",
@@ -878,7 +958,7 @@ def main():
     mcap_path = args.mcap_path if args.mcap_path is not None else os.path.join(data_dir, "data", "data_raw.mcap")
 
     if not args.skip_extract:
-        extract_images_from_mcap(mcap_path, cameras_dir, time_field="publish_time")
+        extract_images_from_mcap(mcap_path, cameras_dir)
     else:
         print("[extract] skipped (--skip_extract)")
     timer.finish()
