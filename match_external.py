@@ -6,6 +6,7 @@ from lightglue import LightGlue
 from lightglue.utils import rbd
 from database import COLMAPDatabase, batch_write_matches_to_database
 from match_utils import load_image_pairs
+from prior_utils import normalize_colmap_image_name
 
 
 def find_similar_images_parallel(image_features, max_num=30, min_num=20, threshold=None, logger=None):
@@ -167,7 +168,16 @@ def match_features_with_lightglue(
     """
     if logger is None:
         logger = logging.getLogger()
-    
+
+    image_features = {
+        normalize_colmap_image_name(name): features
+        for name, features in image_features.items()
+    }
+    image_id_map = {
+        normalize_colmap_image_name(name): image_id
+        for name, image_id in image_id_map.items()
+    }
+
     # Initialize LightGlue matcher
     logger.info("Initializing LightGlue matcher...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -198,7 +208,13 @@ def match_features_with_lightglue(
     prior_match_pairs = None
     if os.path.exists(match_list_path):
         prior_match_pairs = load_image_pairs(match_list_path)
-        prior_match_pairs = set(prior_match_pairs)
+        prior_match_pairs = {
+            (
+                normalize_colmap_image_name(img_name0),
+                normalize_colmap_image_name(img_name1),
+            )
+            for img_name0, img_name1 in prior_match_pairs
+        }
         logger.info(f"Loaded match pairs from existing file: {match_list_path}, total pairs: {len(prior_match_pairs)}")
 
     # 根据策略选择匹配对
@@ -317,4 +333,3 @@ def match_features_with_lightglue(
     db.close()
     
     return feature_matching_time
-

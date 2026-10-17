@@ -638,7 +638,6 @@ def initialize_colmap_database(
         logger.error(f"camera_assignment must be one of {valid_modes}, got '{camera_assignment}'")
         return False
 
-    logger.info("Initializing COLMAP database without feature extraction...")
     logger.info(f"Camera assignment mode: {camera_assignment}")
 
     # Remove existing database file to ensure a clean schema (avoids

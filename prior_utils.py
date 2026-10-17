@@ -8,6 +8,11 @@ def normalize_image_name(name):
     return os.path.normcase(os.path.normpath(str(name))).replace("\\", "/")
 
 
+def normalize_colmap_image_name(name):
+    """Normalize COLMAP image paths to forward slashes without changing case."""
+    return os.path.normpath(str(name)).replace("\\", "/")
+
+
 def filter_and_reindex_prior_data(
     images_full_path,
     images_dir,

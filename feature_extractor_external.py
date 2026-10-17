@@ -6,6 +6,7 @@ from lightglue import ALIKED, SuperPoint, DISK
 from database import COLMAPDatabase, batch_write_keypoints_to_database
 from lightglue.utils import load_image_use_torchvision
 import numpy as np
+from prior_utils import normalize_colmap_image_name
 
 
 def extract_neural_features(
@@ -79,6 +80,7 @@ def extract_neural_features(
     extraction_log = []
     
     for idx, img_path in enumerate(image_files):
+        img_rel_path = normalize_colmap_image_name(os.path.relpath(img_path, images_dir))
         
         # Log memory status before processing each image (for GPU debugging)
         if device == 'cuda':
@@ -117,7 +119,6 @@ def extract_neural_features(
             
             # Get image ID from database
             # logger.info("to fetch image id in database ")
-            img_rel_path = os.path.relpath(img_path, images_dir)
             cursor.execute("SELECT image_id FROM images WHERE name = ?", (img_rel_path,))
             result = cursor.fetchone()
             
@@ -208,4 +209,3 @@ def extract_neural_features(
     db.close()
     
     return image_features, image_id_map, feature_extraction_time
-
