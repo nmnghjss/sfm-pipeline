@@ -133,7 +133,7 @@ parser.add_argument("--max_matches_per_image", "-mpi", type=int, default=100,
                     help="Max number of similar images to match per image (for nearest_k/quick strategies)")
 parser.add_argument("--min_matches_per_image", "-mni", type=int, default=0,
                     help="Minimum number of similar images to match per image (for nearest_k/quick strategies)")
-parser.add_argument("--similarity_threshold", "-st", type=float, default=0.75,
+parser.add_argument("--similarity_threshold", "-st", type=float, default=0.7,
                     help="Similarity threshold for threshold-based matching strategy (0~1)")
 parser.add_argument("--pose_prior", type=str, default="", help="Path to prior pose file (if available)")
 parser.add_argument("--ref_is_gps", type=int, default=1, choices=[0, 1], help="Type of prior pose file (cartesian or gps)")
@@ -366,7 +366,7 @@ if args.feature_type.startswith("ALIKED"):
 
 if args.match_strategy == "threshold":
     args.min_matches_per_image = 10
-    args.max_matches_per_image = 50
+    # args.max_matches_per_image = 50
 
 # ===================== Paths and executables ============================================
 os_type = check_operating_system()
@@ -471,8 +471,8 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     convert_colmap_to_prior_json(args.pose_prior,  args.pos_file, "cartesian")
     args.ref_is_gps = 0
 
-    pre_match_start = time.time()
-    logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
+    # pre_match_start = time.time()
+    # logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
 
     prior_cameras, prior_images, prior_points3D = read_model(args.pose_prior)
 
@@ -532,14 +532,15 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     #     )
 
 
-    # input("Press Enter to continue with feature extraction and mapping using the prior-pose-based image pairs...")
-    pre_match_time = time.time() - pre_match_start
-    logger.info(f"Using {len(images_full_path)} images, pre-matching time: {pre_match_time:.2f} s")
+    # # input("Press Enter to continue with feature extraction and mapping using the prior-pose-based image pairs...")
+    # pre_match_time = time.time() - pre_match_start
+    # logger.info(f"Using {len(images_full_path)} images, pre-matching time: {pre_match_time:.2f} s")
 
 
 # ======================== Initialize database ==================================
 # 若指定了先验相机内参文件（--prior_camera_file），则优先使用该文件初始化数据库：
 # 每个子文件夹对应一个相机，相机 ID 与内参均取自文件。
+database_init_success = False
 prior_camera_file = args.prior_camera_file
 if prior_camera_file:
     if not os.path.isabs(prior_camera_file):
@@ -549,13 +550,13 @@ if prior_camera_file:
         sys.exit(1)
 
     logger.info("Initializing COLMAP database from prior camera file ...")
-    db_init_success = initialize_colmap_database_from_prior_camera_file(
+    database_init_success = initialize_colmap_database_from_prior_camera_file(
         database_path=database_path,
         images_dir=images_dir,
         prior_camera_file=prior_camera_file,
         logger=logger,
     )
-    if not db_init_success:
+    if not database_init_success:
         logger.error("Failed to initialize database from prior camera file!")
         sys.exit(1)
 
@@ -574,8 +575,8 @@ else:
             args.init_camera = True
 
 
-    if args.external_feature or args.external_match:
-        args.init_camera = True  # Ensure database is initialized if using external feature extraction or matching
+    # if args.external_feature or args.external_match:
+    #     args.init_camera = True  # Ensure database is initialized if using external feature extraction or matching
 
 
     if args.init_camera or prior_cameras:
@@ -587,8 +588,8 @@ else:
         else:
             camera_assignment = "per_image"
 
-        logger.info("Initializing COLMAP database with image metadata ...")
-        db_init_success = initialize_colmap_database(
+        logger.info("Initializing COLMAP database with metadata ...")
+        database_init_success = initialize_colmap_database(
             database_path=database_path,
             images_dir= images_dir,
             input_images_path=images_full_path,
@@ -598,10 +599,9 @@ else:
             prior_images=prior_images,
             logger=logger
         )    
-        if not db_init_success:
+        if not database_init_success:
             logger.error("Failed to initialize database!")
             sys.exit(1)
-
 
 # ========================= Image mask generation =============================
 camera_mask_path = ""
@@ -645,14 +645,16 @@ if args.external_feature:
     logger.info("Using external feature extraction...")
     from feature_extractor_external import extract_neural_features
 
-    initialize_colmap_database(
-        database_path=database_path,
-        images_dir=images_dir,
-        input_images_path=images_full_path,
-        camera_model=args.camera,
-        camera_assignment="per_subfolder" if args.single_fold == "1" else "per_image",
-        logger=logger
-    )
+    if not database_init_success:
+        logger.info("Initializing COLMAP database before external feature extraction ...")
+        database_init_success = initialize_colmap_database(
+            database_path=database_path,
+            images_dir=images_dir,
+            input_images_path=images_full_path,
+            camera_model=args.camera,
+            camera_assignment="per_subfolder" if args.single_fold == "1" else "per_image",
+            logger=logger
+        )
     
     # Now run SuperPoint feature extraction   
     feature_start = time.time() 
