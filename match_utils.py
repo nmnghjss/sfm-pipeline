@@ -387,7 +387,7 @@ def compute_matched_image_pairs_by_pose_prior(
     voxel_size=None,
     max_angle=70,
     min_overlap=0.1,
-    max_points=1,
+    max_points=100000,
 ):
 
     # 未显式指定 voxel size 时，基于相机间距自适应计算
@@ -395,15 +395,14 @@ def compute_matched_image_pairs_by_pose_prior(
         voxel_size = compute_adaptive_voxel_size(poses)
         print(f"[INFO] Adaptive voxel size computed: {voxel_size:.4f}")
 
-    # 构建体素
-    points3D_xyz = np.array([point.xyz for point in points3D.values()])
-
-    # 构建体素前，将点云随机下采样至 10w 个点，避免点数过多导致体素计算开销过大
-    if len(points3D_xyz) > max_points:
+    # 构建体素前先随机下采样，避免对全部 3D 点提取坐标并参与体素计算
+    points3D_values = list(points3D.values())
+    if len(points3D_values) > max_points:
         rng = np.random.default_rng(42)
-        sample_idx = rng.choice(len(points3D_xyz), max_points, replace=False)
-        points3D_xyz = points3D_xyz[sample_idx]
+        sample_idx = rng.choice(len(points3D_values), max_points, replace=False)
+        points3D_values = [points3D_values[idx] for idx in sample_idx]
 
+    points3D_xyz = np.array([point.xyz for point in points3D_values])
     _, voxels = build_voxel_grid(points3D_xyz, voxel_size)
 
     vis_cache = precompute_visibility(poses, cameras, voxels)
@@ -416,7 +415,6 @@ def compute_matched_image_pairs_by_pose_prior(
     # 预计算所有对的 overlap 值（关键优化）
     pose_items = list(poses.items())
     overlap_cache = compute_all_overlaps(vis_cache, pose_items)
-    print(f"[INFO] Precomputed {len(overlap_cache)} overlap values")
 
     # 构建匹配图
     pairs = []
@@ -446,4 +444,4 @@ def compute_matched_image_pairs_by_pose_prior(
                     f.write(f"{pose_i.name} {pose_j.name}\n")
     print(f"[INFO] Matched image pairs computed and saved to {output_txt}, total pairs: {len(pairs)}")
 
-    return cameras, images
+    return images

@@ -77,13 +77,13 @@ parser.add_argument("--init_camera", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "threshold", "sequential_custom", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="ALIKED_LIGHTGLUE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "by_pose_prior", "threshold", "sequential_custom", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_alg", "-ma", type=str, default="SIFT_BRUTEFORCE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--anms_selected_num", "-asn", default=-1, type=int, help="Maximum number of features to retain per image after final selection")
 parser.add_argument("--cell_num", "-cn", default=-1, type=int, help="Number of cells for ANMS feature selection")
 parser.add_argument("--per_cell_num", "-pcn", default=-1, type=int, help="Number of features to retain per cell for ANMS feature selection")
@@ -139,7 +139,7 @@ parser.add_argument("--pose_prior", type=str, default="", help="Path to prior po
 parser.add_argument("--ref_is_gps", type=int, default=1, choices=[0, 1], help="Type of prior pose file (cartesian or gps)")
 parser.add_argument("--voxel_size", type=float, default=None, help="Voxel size for prior pose-based image pair generation")
 parser.add_argument("--max_angle", type=float, default=120, help="Maximum angle (in degrees) between camera views for prior pose-based image pair generation")
-parser.add_argument("--min_overlap", type=float, default=0.1, help="Minimum frustum overlap for prior pose-based image pair generation")
+parser.add_argument("--min_overlap", type=float, default=0.2, help="Minimum frustum overlap for prior pose-based image pair generation")
 parser.add_argument("--refine_num", type=int, default=1, help="refine reconstruction iterations num")
 parser.add_argument("--undistort", type=int, default=1, help="Whether to undistort images after reconstruction")
 parser.add_argument("--unify_output_images", action="store_true")
@@ -471,9 +471,6 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     convert_colmap_to_prior_json(args.pose_prior,  args.pos_file, "cartesian")
     args.ref_is_gps = 0
 
-    # pre_match_start = time.time()
-    # logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")
-
     prior_cameras, prior_images, prior_points3D = read_model(args.pose_prior)
 
     prior_focal_length = min(
@@ -515,27 +512,20 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
         for rel_path in images_list_path:
             f.write(f"{rel_path}\n")
       
-            
-    # prior_cameras, matched_prior_images = compute_matched_image_pairs_by_pose_prior(
-    #     cameras=prior_cameras,
-    #     poses=prior_images,
-    #     points3D=prior_points3D,
-    #     output_txt=matched_images_pairs_path,
-    #     voxel_size=args.voxel_size,
-    #     max_angle=args.max_angle,
-    #     min_overlap=args.min_overlap
-    # )
-    # if len(matched_prior_images) != len(prior_images):
-    #     logger.warning(
-    #         f"Matched prior model returned {len(matched_prior_images)} images, "
-    #         f"but filtered prior images contain {len(prior_images)} images"
-    #     )
-
-
-    # # input("Press Enter to continue with feature extraction and mapping using the prior-pose-based image pairs...")
-    # pre_match_time = time.time() - pre_match_start
-    # logger.info(f"Using {len(images_full_path)} images, pre-matching time: {pre_match_time:.2f} s")
-
+    if args.match_strategy == "by_pose_prior":
+        pre_match_start = time.time()
+        logger.info(f"Finding image pairs based on low-pricision poses from: {args.pose_prior}")        
+        _ = compute_matched_image_pairs_by_pose_prior(
+            cameras=prior_cameras,
+            poses=prior_images,
+            points3D=prior_points3D,
+            output_txt=matched_images_pairs_path,
+            voxel_size=args.voxel_size,
+            max_angle=args.max_angle,
+            min_overlap=args.min_overlap
+        )
+        pre_match_time = time.time() - pre_match_start
+        logger.info(f"Using {len(images_full_path)} images, pre-matching time: {pre_match_time:.2f} s")
 
 # ======================== Initialize database ==================================
 # 若指定了先验相机内参文件（--prior_camera_file），则优先使用该文件初始化数据库：
@@ -573,11 +563,6 @@ else:
         if calib_result is not None:
             prior_cameras, prior_images = calib_result
             args.init_camera = True
-
-
-    # if args.external_feature or args.external_match:
-    #     args.init_camera = True  # Ensure database is initialized if using external feature extraction or matching
-
 
     if args.init_camera or prior_cameras:
         camera_assignment = "global" 

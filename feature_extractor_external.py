@@ -36,7 +36,7 @@ def extract_neural_features(
         logger = logging.getLogger()
     
     # Initialize SuperPoint model
-    logger.info("Initializing SuperPoint model...")
+    logger.info("Initializing feature extracter model...")
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     logger.info(f"Using device: {device}")
     # local_weights_root = "checkpoints/pth"

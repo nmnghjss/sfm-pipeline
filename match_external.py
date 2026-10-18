@@ -217,13 +217,19 @@ def match_features_with_lightglue(
         }
         logger.info(f"Loaded match pairs from existing file: {match_list_path}, total pairs: {len(prior_match_pairs)}")
 
-    # 根据策略选择匹配对
-    if match_strategy == "exhaustive":
+    # 有已有匹配对文件时直接使用其中的图像对
+    if prior_match_pairs is not None:
+        match_pairs = prior_match_pairs
+        logger.info(f"Using {len(match_pairs)} image pairs from existing match list")
+    # 否则根据策略选择匹配对
+    elif match_strategy == "exhaustive":
         match_pairs = []
         for i, img_name0 in enumerate(image_list):
+            img_id0 = image_id_map[img_name0]
             for j, img_name1 in enumerate(image_list):
-                if i < j:
-                    match_pairs.append((img_name0, img_name1))                   
+                img_id1 = image_id_map[img_name1]
+                if img_id0 < img_id1:
+                    match_pairs.append((img_name0, img_name1))
         logger.info(f"Exhaustive matching: {len(match_pairs)} image pairs will be matched")
     
     elif match_strategy == "nearest_k":
@@ -245,16 +251,6 @@ def match_features_with_lightglue(
             for j, img_name1 in enumerate(image_list):
                 if i < j:
                     match_pairs.append((img_name0, img_name1))
-
-    if prior_match_pairs is not None:
-        filted_num = 0
-        for img_name0, img_name1 in match_pairs:
-            if (img_name0, img_name1) not in prior_match_pairs and (img_name1, img_name0) not in prior_match_pairs:
-                match_pairs.remove((img_name0, img_name1))
-                filted_num += 1
-                logger.info(f"Filtering out pair ({img_name0}, {img_name1}) not in prior match pairs")
-        logger.info(f"After filtering with prior match pairs, {len(match_pairs)} pairs remain for matching, filtered out {filted_num} pairs")
-        # match_pairs = prior_match_pairs
 
     # Batch write match list to file if path provided
     try:
