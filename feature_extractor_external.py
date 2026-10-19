@@ -154,7 +154,7 @@ def extract_neural_features(
             descriptors = descriptors.cpu().numpy()
             
             # Descriptors from SuperPoint are Float32 in range [0, 1], convert to uint8
-            descriptors = (descriptors * 255.0).astype(np.uint8)
+            # descriptors = (descriptors * 255.0).astype(np.uint8)
             
             num_kpts = keypoints.shape[0]
             total_keypoints += num_kpts

@@ -45,7 +45,8 @@ from match_cmd import (
     get_spatial_matcher_cmd,
     get_matches_importer_cmd,
     get_sequential_match_list,
-    get_vocab_tree_matcher_cmd
+    get_vocab_tree_matcher_cmd,
+    get_vocab_tree_retriever_cmd
 )
 from read_write_model import (
     read_cameras_binary,
@@ -77,13 +78,13 @@ parser.add_argument("--init_camera", action="store_true")
 parser.add_argument("--single_camera", "-sc",default="0", type=str)
 parser.add_argument("--single_fold", "-sf", default="1", type=str)
 parser.add_argument("--single_image", "-si",default="0", type=str)
-parser.add_argument("--feature_type", "-ft", type=str, default="SIFT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
+parser.add_argument("--feature_type", "-ft", type=str, default="ALIKED_N16ROT", choices=["SIFT", "ALIKED_N16ROT", "ALIKED_N32", "LOMA_B", "LOMA_B128"], help="Feature type for COLMAP feature extraction (e.g., SIFT, ALIKED_N16ROT, ALIKED_N32)")
 parser.add_argument("--max_image_size", type=int, default=-1, help="maximum image size used to extract feature")
-parser.add_argument("--match_strategy", "-ms", type=str, default="vocab_tree", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "by_pose_prior", "threshold", "sequential_custom", "custom"], help="Matching strategy to use")
-parser.add_argument("--match_alg", "-ma", type=str, default="SIFT_BRUTEFORCE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
+parser.add_argument("--match_strategy", "-ms", type=str, default="threshold", choices=["exhaustive", "sequential", "vocab_tree", "spatial", "by_pose_prior", "threshold", "sequential_custom", "custom"], help="Matching strategy to use")
+parser.add_argument("--match_alg", "-ma", type=str, default="ALIKED_LIGHTGLUE", choices=["SIFT_BRUTEFORCE", "ALIKED_BRUTEFORCE", "LOMA_BRUTEFORCE", "SIFT_LIGHTGLUE", "ALIKED_LIGHTGLUE", "LOMA_B", "LOMA_B128", "LOMA_R", "LOMA_L", "LOMA_G"], help="Matching type for COLMAP (e.g., ALIKED_LIGHTGLUE, ALIKED_N32)")
 parser.add_argument("--vocab_feature_num", type=int, default=0, help="vocab tree retrial feature num")
-parser.add_argument("--mapper", default="global", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
-parser.add_argument("--max_feature_num", "-mfn", default=8192, type=int, help="Maximum number of features to extract per image")
+parser.add_argument("--mapper", default="acc", type=str, choices=["incremental", "acc", "global", "hierarchical", "hierarchical_acc", "pos_prior", "pose_prior_global", "pose_prior_incremental"], help="Algorithm for matching and mapping: colmap / acc / global / hierarchical / hierarchical_acc / pose_prior")
+parser.add_argument("--max_feature_num", "-mfn", default=2048, type=int, help="Maximum number of features to extract per image")
 parser.add_argument("--anms_selected_num", "-asn", default=-1, type=int, help="Maximum number of features to retain per image after final selection")
 parser.add_argument("--cell_num", "-cn", default=-1, type=int, help="Number of cells for ANMS feature selection")
 parser.add_argument("--per_cell_num", "-pcn", default=-1, type=int, help="Number of features to retain per cell for ANMS feature selection")
@@ -375,10 +376,10 @@ print(f"Detected operating system: {os_type}")
 if os_type == 'Windows':
     # colmap_path = os.path.join(current_path, "colmap-x64-windows-cuda-4.0.4/bin/colmap.exe")
     # colmap_path = os.path.join(current_path, "Release-colmap-ch/colmap.exe")
-    colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
+    # colmap_path = "D:\\Codes\\Study\\colmap\\build\\src\\colmap\\exe\\Release\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-4.2.1\\bin\\colmap.exe"
     # colmap_path = "D:\\Programs\\colmap-x64-windows-cuda-260826-dev_wl\\colmap.exe"
-    # colmap_path = os.path.join(current_path, "Release-colmap-4.2.0-wl-260924/colmap.exe")
+    colmap_path = os.path.join(current_path, "Release-colmap-dev-4.3.0-wl-20261016/colmap.exe")
     
 else:
     colmap_path = "colmap"
@@ -471,7 +472,8 @@ if args.pose_prior is not None and len(args.pose_prior) > 0:
     convert_colmap_to_prior_json(args.pose_prior,  args.pos_file, "cartesian")
     args.ref_is_gps = 0
 
-    prior_cameras, prior_images, prior_points3D = read_model(args.pose_prior)
+    read_points3D = True if args.match_strategy == "by_pose_prior" else False
+    prior_cameras, prior_images, prior_points3D = read_model(args.pose_prior, read_points3D=read_points3D)
 
     prior_focal_length = min(
         camera.params[0]
@@ -751,6 +753,23 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         logger.info(f"  Max matches per image: {args.max_matches_per_image}")    
     feature_type = "aliked" if args.feature_type.lower().startswith("aliked") else args.feature_type
     logger.info(f"Using {feature_type} features for matching")
+
+    logger.info(f"starting retrieving image pairs using vocab tree for {args.feature_type} features...")
+    vocab_tree_retriever_start = time.time()
+    vocab_tree_retriever_cmd = get_vocab_tree_retriever_cmd(
+        colmap_command=colmap_command,
+        log_level=log_level,
+        database_path=database_path,
+        vocab_path=vocab_path,
+        output_pairs_path=matched_images_pairs_path,
+        vocab_feature_num=args.max_feature_num,
+        max_matches_per_image=args.max_matches_per_image,
+        min_matches_per_image=args.min_matches_per_image
+    )
+    run_subprocess(vocab_tree_retriever_cmd, logger, monitor_memory=args.monitor_memory, peak_memory=peak_memory)
+    vocab_tree_retriever_time = time.time() - vocab_tree_retriever_start
+    logger.info(f"Vocab tree retrieval done in {vocab_tree_retriever_time:.2f} s")
+
    
     match_start = time.time()
     feat_match_time = match_features_with_lightglue(
@@ -766,6 +785,7 @@ if image_features is not None and (args.external_match or args.match_strategy ==
         similarity_threshold=args.similarity_threshold,
         logger=logger
     )
+    
 
     # --- Import matches using COLMAP matches_importer ---
     logger.info("Importing matches into COLMAP database using matches_importer...")

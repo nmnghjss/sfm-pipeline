@@ -495,6 +495,33 @@ def get_vocab_tree_matcher_cmd(
     return vocab_tree_matcher_cmd
 
 
+def get_vocab_tree_retriever_cmd(
+    colmap_command: str,
+    log_level: int,
+    database_path: str,
+    vocab_path: str,
+    output_pairs_path: str = "",
+    vocab_feature_num: int = 0,
+    max_matches_per_image: int = 100,
+    min_matches_per_image: int = 0,
+):
+    vocab_tree_retriever_cmd = [
+        colmap_command, "vocab_tree_retriever",
+        "--log_level", str(log_level),
+        "--database_path", database_path,
+        "--vocab_tree_path", vocab_path,    
+        "--output_pairs_path", output_pairs_path,
+        "--num_images", str(max_matches_per_image),  # 100
+        "--num_neighbors", "5",  # 5
+        "--num_checks", "64",
+        "--num_images_after_verification", str(min_matches_per_image),  # 0
+        "--max_num_features", str(vocab_feature_num),   
+        # "--match_list_path", match_list_path,
+        "--num_threads", "-1",
+    ]
+
+    return vocab_tree_retriever_cmd
+
 def get_spatial_matcher_cmd(
     colmap_command: str,
     log_level: int,

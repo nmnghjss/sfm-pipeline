@@ -97,17 +97,13 @@ def convert_colmap_to_prior_json(
         raise FileNotFoundError(f"sparse 目录不存在或不是目录: {sparse_dir}")
 
     # 读取 COLMAP 稀疏模型（自动检测 .bin / .txt）
-    cameras, images, points3D = read_model(str(sparse_dir))
+    cameras, images, _ = read_model(str(sparse_dir), read_points3D=False)
     if images is None:
         raise ValueError(
             f"无法在 {sparse_dir} 中检测到有效的 COLMAP 模型"
             "（需要 cameras/images/points3D 的 .bin 或 .txt）"
         )
-
-    print(
-        f"读取到 {len(images)} 张图像, {len(cameras)} 个相机, "
-        f"{len(points3D)} 个三维点"
-    )
+    print(f"读取到 {len(images)} 张图像, {len(cameras)} 个相机")
 
     records = []
     for img_id in sorted(images.keys()):

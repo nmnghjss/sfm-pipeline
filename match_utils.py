@@ -1,4 +1,6 @@
+import csv
 import os
+import shlex
 import numpy as np
 from pose_utils import quat_to_rot
 from read_write_model import read_model
@@ -317,7 +319,7 @@ def load_image_pairs(pairs_txt, unique=True):
     pairs = []
     seen = set()
 
-    with open(pairs_txt, "r") as f:
+    with open(pairs_txt, "r", encoding="utf-8-sig") as f:
         for line_id, line in enumerate(f):
             line = line.strip()
 
@@ -325,12 +327,32 @@ def load_image_pairs(pairs_txt, unique=True):
             if not line or line.startswith("#"):
                 continue
 
-            parts = line.split()
+            if "," in line:
+                parts = next(csv.reader([line], skipinitialspace=True))
+            else:
+                parts = shlex.split(line, posix=False)
+                parts = [
+                    value[1:-1]
+                    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"')
+                    else value
+                    for value in parts
+                ]
+            parts = [part.strip() for part in parts]
             if len(parts) < 2:
                 print(f"[WARN] Invalid line {line_id}: {line}")
                 continue
+            elif len(parts) == 2:
+                name1, name2 = parts[0], parts[1]
+            elif len(parts) == 4:
+                id1, name1, id2, name2 = parts[0], parts[1], parts[2], parts[3]
+            elif len(parts) == 5:
+                id1, name1, id2, name2, score = parts[0], parts[1], parts[2], parts[3], parts[4]
+            else:
+                print(f"[WARN] Invalid line {line_id}: {line}")
+                continue
 
-            name1, name2 = parts[0], parts[1]
+            if name1 == name2:
+                continue  # skip self-pairs
 
             if unique:
                 # 无向去重（A-B 和 B-A 视为同一对）
@@ -341,7 +363,7 @@ def load_image_pairs(pairs_txt, unique=True):
 
             pairs.append((name1, name2))
 
-    print(f"[INFO] Loaded {len(pairs)} image pairs")
+    print(f"[INFO] Loaded {len(pairs)} image pairs from {pairs_txt}")
     return pairs
 
 def compute_adaptive_voxel_size(poses, min_size=0.05, max_size=1.0):

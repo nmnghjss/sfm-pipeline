@@ -733,7 +733,7 @@ def build_camera_pose(R_wi, t_wi, R_il, t_il, R_lc, t_lc):
 
 
 def process_point_cloud(las_path, out_ply, voxel_size=1.0, random_ratio=0.6,
-                        target_num_points=50000):
+                        target_num_points=50000, estimate_normals=False):
     """Load, sample, normal-estimate, and write a colored LAS point cloud.
 
     Sampling uses ``two_stage_point_cloud_sample``: half of the target points
@@ -791,11 +791,12 @@ def process_point_cloud(las_path, out_ply, voxel_size=1.0, random_ratio=0.6,
     else:
         pcd.paint_uniform_color([0.5, 0.5, 0.5])
 
-    print(f"[point cloud] estimating normals on {len(pcd.points)} points")
-    pcd.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
-    )
-    pcd.orient_normals_towards_camera_location(np.array([0.0, 0.0, 0.0]))
+    if estimate_normals:
+        print(f"[point cloud] estimating normals on {len(pcd.points)} points")
+        pcd.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.1, max_nn=30)
+        )
+        pcd.orient_normals_towards_camera_location(np.array([0.0, 0.0, 0.0]))
 
     o3d.io.write_point_cloud(out_ply, pcd, write_ascii=False)
     print(f"[point cloud] wrote {out_ply}")
@@ -893,14 +894,18 @@ def main():
                              "default 'none' keeps the device/COLMAP OpenCV convention (Y down, Z front). "
                              "Use 'x180' to match the manufacturer's transforms.json / 3DGS convention "
                              "(Y up, Z back), which is rotated 180 degrees around X relative to COLMAP.")
-    parser.add_argument("--num_points", type=int, default=2000000,
+    parser.add_argument("--num_points", type=int, default=90000000,
                         help="target number of points in the two-stage down-sampling")
     parser.add_argument("--voxel_size", type=float, default=0.1,
                         help="voxel edge length for the second sampling stage")
     parser.add_argument("--random_ratio", type=float, default=1.0,
                         help="fraction of points sampled uniformly at random in the first stage")
+    parser.add_argument("--estimate_normals", action="store_true",
+                        help="estimate normals for the down-sampled point cloud")
     parser.add_argument("--fmt", choices=["txt", "bin", "both"], default="txt",
                         help="COLMAP sparse model output format (default: bin)")
+    parser.add_argument("--output_points", action="store_true",
+                        help="write down-sampled point cloud to <output_dir>/lidar-sparse/points3D.txt/bin")
     parser.add_argument("--max_workers", type=int, default=0,
                         help="parallel workers for undistortion; 0 means auto (60%% of CPU cores)")
     parser.add_argument("--undistort_interp", choices=["nearest", "linear", "cubic", "lanczos4"],
@@ -1133,6 +1138,7 @@ def main():
             voxel_size=args.voxel_size,
             random_ratio=args.random_ratio,
             target_num_points=args.num_points,
+            estimate_normals=args.estimate_normals
         )
     timer.finish()
 
@@ -1142,9 +1148,9 @@ def main():
     # ------------------------------------------------------------------
     points3D = build_points3D_dict(points3D_pcd) if points3D_pcd is not None else {}
     if args.fmt in ("bin", "both"):
-        write_model(cameras_bin, images_bin, points3D, sparse_dir, ext=".bin")
+        write_model(cameras_bin, images_bin, points3D, sparse_dir, ext=".bin", output_points3D=args.output_points)
     if args.fmt in ("txt", "both"):
-        write_model(cameras_bin, images_bin, points3D, sparse_dir, ext=".txt")
+        write_model(cameras_bin, images_bin, points3D, sparse_dir, ext=".txt", output_points3D=args.output_points)
     print(f"[colmap] wrote sparse model format={args.fmt} to {sparse_dir}")
     timer.finish()
 
