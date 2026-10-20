@@ -10,7 +10,7 @@ import numpy as np
 parent_dir = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(parent_dir))
 
-from utils import count_images_in_dir
+from utils.utils import count_images_in_dir
 
 # ========= 在这里改你的图片文件夹路径 =========
 img_dir = r"E:\\images2400\\input"
@@ -68,4 +68,3 @@ for idx, img_path in enumerate(files, start=0):
         continue
 
 print(f"\n✅ resize完成 - 成功: {success_count}, 失败: {failed_count}")
-

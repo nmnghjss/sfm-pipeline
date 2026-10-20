@@ -32,7 +32,7 @@ from datetime import datetime
 import numpy as np
 from argparse import ArgumentParser
 
-from read_write_model import (
+from sfm.read_write_model import (
     qvec2rotmat,
     rotmat2qvec,
     read_model,

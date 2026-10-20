@@ -75,7 +75,7 @@ import numpy as np
 
 # 获取当前文件所在目录的上一级目录
 sys.path.append(str(Path(__file__).parent.parent))
-from unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
+from utils.unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
 
 # Default undistortion worker ratio: use 60% of logical CPU cores.
 _DEFAULT_WORKER_RATIO = 0.60

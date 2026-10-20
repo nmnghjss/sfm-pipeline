@@ -34,7 +34,7 @@ import numpy as np
 parent_dir = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(parent_dir))
 
-from read_write_model import (  # noqa: E402
+from sfm.read_write_model import (  # noqa: E402
     read_model,
     write_model,
     detect_model_format,

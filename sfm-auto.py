@@ -4,12 +4,12 @@ import logging
 from argparse import ArgumentParser
 import shutil
 import time
-from utils import *
+from utils.utils import *
 from pathlib import Path
 import numpy as np
 import cv2
-from database import COLMAPDatabase, ReadColmapDatabase, filter_matches_by_inliers
-from visualization import visualize_image_pairs
+from sfm.database import COLMAPDatabase, ReadColmapDatabase, filter_matches_by_inliers
+from utils.visualization import visualize_image_pairs
 import ctypes
 
 # --------------------------

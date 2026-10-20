@@ -7,10 +7,12 @@ import logging
 import shutil
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # from get_depth_maps import get_depth_maps
 # from correct_depth_maps import compute_scale_and_offset
 # from train import *
-from utils import count_image_files, copy_file, delete_directory, delete_file, find_directories_by_name
+from utils.utils import count_image_files, copy_file, delete_directory, delete_file, find_directories_by_name
 import csv
 
 def sfm_with_colmap(sfm_pipeline_exe: str, source_dir: str, output_dir: str):
@@ -106,7 +108,7 @@ def resource_path():
         print(print("sys._MEIPASS:", sys._MEIPASS))
         print("os.listdir(sys._MEIPASS):", os.listdir(sys._MEIPASS))
     except Exception:
-        base_path = os.path.dirname(os.path.abspath(__file__))  # 开发时：当前文件所在目录
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     return base_path
 
 
@@ -117,7 +119,7 @@ def get_project_root():
         return os.path.dirname(sys.executable)
     else:
         # 开发模式：直接运行 .py 文件
-        return os.path.dirname(os.path.abspath(__file__))
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 

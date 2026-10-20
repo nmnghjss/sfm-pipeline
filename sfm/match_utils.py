@@ -2,8 +2,8 @@ import csv
 import os
 import shlex
 import numpy as np
-from pose_utils import quat_to_rot
-from read_write_model import read_model
+from utils.pose_utils import quat_to_rot
+from .read_write_model import read_model
 
 def build_voxel_grid(points, voxel_size):
     mins = points.min(axis=0)

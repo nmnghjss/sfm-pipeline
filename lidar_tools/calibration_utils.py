@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional
 
 # 获取当前文件所在目录的上一级目录
 sys.path.append(str(Path(__file__).parent.parent))
-from read_write_model import Camera, Image
+from sfm.read_write_model import Camera, Image
 
 
 def load_calibration(

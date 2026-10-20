@@ -50,7 +50,9 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from utils.unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
 
 
 # ---------------------------------------------------------------------------

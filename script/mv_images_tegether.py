@@ -2,7 +2,7 @@ import shutil
 import os
 import argparse
 
-from utils import count_images_in_dir_recursive
+from utils.utils import count_images_in_dir_recursive
 
 
 def main(project_dir, output_dir):

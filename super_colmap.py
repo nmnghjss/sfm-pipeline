@@ -4,8 +4,8 @@ import cv2
 import os, time
 import numpy as np
 import argparse
-from database import COLMAPDatabase
-from utils import *
+from sfm.database import COLMAPDatabase
+from utils.utils import *
 import torch
 from mapper import mapper as colmap_mapper
 import shutil

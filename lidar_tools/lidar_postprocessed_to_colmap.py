@@ -30,7 +30,7 @@ from lidar_data_parser import two_stage_point_cloud_sample
 
 # 获取当前文件所在目录的上一级目录
 sys.path.append(str(Path(__file__).parent.parent))
-from read_write_model import Camera, Image, Point3D, write_model
+from sfm.read_write_model import Camera, Image, Point3D, write_model
 
 
 def load_calibration(path: Path) -> dict[str, dict]:

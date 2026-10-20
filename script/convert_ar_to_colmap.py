@@ -18,7 +18,7 @@ from argparse import ArgumentParser
 import numpy as np
 import open3d as o3d
 from PIL import Image
-from pose_utils import quat_to_rot, rot_to_quat, rotation_from_two_vectors
+from utils.pose_utils import quat_to_rot, rot_to_quat, rotation_from_two_vectors
 
 
 

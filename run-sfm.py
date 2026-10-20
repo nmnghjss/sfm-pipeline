@@ -8,7 +8,7 @@ from datetime import datetime
 import cv2
 import numpy as np
 from PIL import Image
-from mapper_cmd import (
+from sfm.mapper_cmd import (
     get_ba_cmd,
     get_incremental_mapper_cmd,
     get_hierarchical_mapper_cmd,
@@ -19,8 +19,8 @@ from mapper_cmd import (
     get_reconstruction_refine_cmd,
     get_model_align_cmd
 )
-from record_param import record_args
-from utils import (
+from utils.record_param import record_args
+from utils.utils import (
     delete_directory,
     run_subprocess,
     check_operating_system,
@@ -31,15 +31,15 @@ from utils import (
     clear_folder,
     move_files,
 )
-from database import ReadColmapDatabase, filter_matches_by_inliers, read_all_keypoints, get_matched_image_pairs
-from visualization import visualize_image_pairs, draw_keypoints_on_image
+from sfm.database import ReadColmapDatabase, filter_matches_by_inliers, read_all_keypoints, get_matched_image_pairs
+from utils.visualization import visualize_image_pairs, draw_keypoints_on_image
 from lidar_tools.calibration_utils import build_prior_cameras_from_calibration
 
-from match_utils import compute_matched_image_pairs_by_pose_prior
-from prior_utils import filter_and_reindex_prior_data
-from database import initialize_colmap_database, initialize_colmap_database_from_prior_camera_file
-from feature_extractor_cmd import get_feature_extractor_cmd
-from match_cmd import (
+from sfm.match_utils import compute_matched_image_pairs_by_pose_prior
+from sfm.prior_utils import filter_and_reindex_prior_data
+from sfm.database import initialize_colmap_database, initialize_colmap_database_from_prior_camera_file
+from sfm.feature_extractor_cmd import get_feature_extractor_cmd
+from sfm.match_cmd import (
     get_exhaustive_matcher_cmd,
     get_sequential_matcher_cmd,
     get_spatial_matcher_cmd,
@@ -48,7 +48,7 @@ from match_cmd import (
     get_vocab_tree_matcher_cmd,
     get_vocab_tree_retriever_cmd
 )
-from read_write_model import (
+from sfm.read_write_model import (
     read_cameras_binary,
     read_images_binary,
     write_cameras_binary,
@@ -630,7 +630,7 @@ if args.create_mask:
 image_features = None
 if args.external_feature:
     logger.info("Using external feature extraction...")
-    from feature_extractor_external import extract_neural_features
+    from sfm.feature_extractor_external import extract_neural_features
 
     if not database_init_success:
         logger.info("Initializing COLMAP database before external feature extraction ...")
@@ -744,7 +744,7 @@ logger.info("Starting feature matching...")
 match_start = time.time()
 logger.info("Starting feature matching...")
 if image_features is not None and (args.external_match or args.match_strategy == "threshold"):
-    from match_external import match_features_with_lightglue
+    from sfm.match_external import match_features_with_lightglue
 
     # Run LightGlue feature matching
     # args.match_strategy = "threshold"

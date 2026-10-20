@@ -3,7 +3,7 @@ import sys
 import numpy as np
 from argparse import ArgumentParser
 
-from read_write_model import qvec2rotmat, read_model, rotmat2qvec, Image as ColmapImage
+from sfm.read_write_model import qvec2rotmat, read_model, rotmat2qvec, Image as ColmapImage
 import matplotlib.pyplot as plt
 
 
@@ -433,5 +433,4 @@ if __name__ == "__main__":
 
     except FileNotFoundError as e:
         print(str(e))
-
 

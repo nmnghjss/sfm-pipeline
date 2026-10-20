@@ -1,7 +1,9 @@
 import os
 import sys
 from PIL import Image
-from utils import count_images_in_dir,  find_directories_by_name
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from utils.utils import count_images_in_dir,  find_directories_by_name
 import re
 from typing import List
 from natsort import natsorted

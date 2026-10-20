@@ -14,7 +14,7 @@ import open3d as o3d
 from argparse import ArgumentParser
 
 # Import COLMAP model reader from the same directory
-from read_write_model import read_model, qvec2rotmat
+from sfm.read_write_model import read_model, qvec2rotmat
 
 
 def create_camera_frustum(R, t, scale=0.15, color=None):

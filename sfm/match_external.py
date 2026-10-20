@@ -4,9 +4,9 @@ import logging
 import torch
 from lightglue import LightGlue
 from lightglue.utils import rbd
-from database import COLMAPDatabase, batch_write_matches_to_database
-from match_utils import load_image_pairs
-from prior_utils import normalize_colmap_image_name
+from .database import COLMAPDatabase, batch_write_matches_to_database
+from .match_utils import load_image_pairs
+from .prior_utils import normalize_colmap_image_name
 
 
 def find_similar_images_parallel(image_features, max_num=30, min_num=20, threshold=None, logger=None):

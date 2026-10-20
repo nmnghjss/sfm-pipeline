@@ -33,7 +33,7 @@ from pathlib import Path
 parent_dir = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(parent_dir))
 
-from read_write_model import read_model, qvec2rotmat  # noqa: E402
+from sfm.read_write_model import read_model, qvec2rotmat  # noqa: E402
 
 
 def parse_args():

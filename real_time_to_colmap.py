@@ -94,12 +94,12 @@ from scipy.spatial.transform import Slerp, Rotation as R
 from scipy.spatial import cKDTree
 from mcap.reader import make_reader
 from rosbags.typesys import Stores, get_typestore, get_types_from_msg
-from unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
+from utils.unicode_paths import imread as unicode_imread, imwrite as unicode_imwrite
 
 # Default undistortion worker ratio: use 60% of logical CPU cores.
 _DEFAULT_WORKER_RATIO = 0.60
 
-from read_write_model import (
+from sfm.read_write_model import (
     Camera,
     Image,
     Point3D,

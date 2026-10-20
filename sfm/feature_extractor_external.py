@@ -3,10 +3,10 @@ import time
 import logging
 import torch
 from lightglue import ALIKED, SuperPoint, DISK
-from database import COLMAPDatabase, batch_write_keypoints_to_database
+from .database import COLMAPDatabase, batch_write_keypoints_to_database
 from lightglue.utils import load_image_use_torchvision
 import numpy as np
-from prior_utils import normalize_colmap_image_name
+from .prior_utils import normalize_colmap_image_name
 
 
 def extract_neural_features(

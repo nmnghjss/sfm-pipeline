@@ -1,6 +1,6 @@
 import os
 from PIL import Image
-from utils import count_images_in_dir
+from utils.utils import count_images_in_dir
 import re
 from typing import List
 from natsort import natsorted

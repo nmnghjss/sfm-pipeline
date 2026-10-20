@@ -6,8 +6,8 @@ import os
 import pathlib
 import logging
 from PIL import Image
-from defs import ViewGraph, ImagePair, Cameras, Images, CameraModelId, ConfigurationType
-from utils import count_images_in_dir, get_subfolders
+from .defs import ViewGraph, ImagePair, Cameras, Images, CameraModelId, ConfigurationType
+from utils.utils import count_images_in_dir, get_subfolders
 
 IS_PYTHON3 = sys.version_info[0] >= 3
 MAX_IMAGE_ID = 2**31 - 1
@@ -1416,4 +1416,3 @@ def batch_write_matches_to_database(db, matches_list: list, logger=None):
         except:
             pass
         return 0
-
